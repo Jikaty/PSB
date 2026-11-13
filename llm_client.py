@@ -15,11 +15,19 @@ RETRY_PAUSES = (1.0, 3.0, 7.0)
 CHAT_TIMEOUT = 60.0
 MIN_ATTEMPT = 2.0
 JSON_MODE_OFF = threading.Event()
+MAX_TOKENS_CAP = 8192
+TOKENS = {"floor": 0}
 SLOTS = threading.BoundedSemaphore(max(SETTINGS.max_workers, 4))
 
 
 class OutOfTime(ValueError):
     pass
+
+
+class EmptyCompletion(ValueError):
+    def __init__(self, reasoning: str = "") -> None:
+        super().__init__("empty completion")
+        self.reasoning = reasoning
 
 
 CLIENT_ERRORS = (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError)
@@ -107,7 +115,26 @@ def post_json(
 
 
 def strip_think(text: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    text = re.sub(r"<think>.*", "", text, flags=re.S)
+    return text.rsplit("</think>", 1)[-1].strip()
+
+
+def part_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else "" for item in value]
+        return "".join(part for part in parts if isinstance(part, str))
+    return ""
+
+
+def read_choice(result: dict) -> tuple[str, str, str]:
+    choice = result["choices"][0]
+    message = choice.get("message") or {}
+    content = strip_think(part_text(message.get("content")))
+    reasoning = part_text(message.get("reasoning_content")) or part_text(message.get("reasoning"))
+    return content, reasoning.strip(), str(choice.get("finish_reason") or "")
 
 
 def chat(
@@ -118,30 +145,55 @@ def chat(
     timeout: float | None = CHAT_TIMEOUT,
     until: float | None = None,
 ) -> str:
-    payload = {
-        "model": settings.llm_model,
-        "messages": messages,
-        "temperature": settings.temperature,
-        "max_tokens": settings.max_tokens,
-    }
+    payload = {"model": settings.llm_model, "messages": messages, "temperature": settings.temperature}
     if settings.reasoning_effort:
         payload["reasoning_effort"] = settings.reasoning_effort
+    base = max(settings.max_tokens, TOKENS["floor"])
+    tokens = base
+    can_grow = True
     use_json = json_mode and not JSON_MODE_OFF.is_set()
+    rejected = False
+    best = reasoning = ""
     for _ in range(3):
-        body = {**payload, "response_format": {"type": "json_object"}} if use_json else payload
+        body = {**payload, "max_tokens": tokens}
+        if use_json:
+            body["response_format"] = {"type": "json_object"}
         try:
             result = post_json(client, settings, "/chat/completions", settings.llm_key, body, timeout=timeout, until=until)
         except httpx.HTTPStatusError as exc:
-            if use_json and exc.response.status_code in (400, 422):
-                use_json = False
+            refused = exc.response.status_code in (400, 422)
+            if refused and tokens > base:
+                tokens, can_grow = base, False
                 continue
+            if refused and use_json:
+                use_json, rejected = False, True
+                continue
+            if best:
+                return best
             raise
-        if json_mode and not use_json:
+        except CLIENT_ERRORS:
+            if best:
+                return best
+            raise
+        if rejected:
             JSON_MODE_OFF.set()
-        content = strip_think(result["choices"][0]["message"].get("content") or "")
-        if content:
+        content, thought, finish = read_choice(result)
+        reasoning = thought or reasoning
+        bigger = min(max(tokens * 4, 4096), MAX_TOKENS_CAP) if can_grow else tokens
+        if content and (finish != "length" or bigger <= tokens):
+            if tokens > settings.max_tokens:
+                TOKENS["floor"] = tokens
             return content
-    raise ValueError("empty completion")
+        best = content or best
+        if finish == "length" and bigger > tokens:
+            tokens = bigger
+            count("/chat/completions more tokens")
+        elif not content and use_json:
+            use_json = False
+            count("/chat/completions blank in json mode")
+    if best:
+        return best
+    raise EmptyCompletion(reasoning)
 
 
 def embed(

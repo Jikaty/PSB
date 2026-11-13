@@ -232,7 +232,7 @@ check("empty content", res["status"] == "error" and res["answer"] == pipeline.FA
 res, seen = run(lambda body, n: reply('{"type":"answer","answer":"","citations":[]}'))
 check("empty answer field", res["status"] == "error" and res["answer"] == pipeline.FALLBACK)
 res, seen = run(lambda body, n: reply('{"type":"чушь","answer":["x"],"citations":"нет"}'))
-check("bad field types", res["status"] == "error")
+check("bad field types", res["status"] == "answer" and res["answer"] == "x" and res["sources"] == [])
 res, seen = run(lambda body, n: reply('{"type":"ЧУШЬ","answer":"Да, п. 5.2.","citations":{"a":1}}'))
 check("unknown type", res["status"] == "answer" and res["sources"] == [])
 res, seen = run(lambda body, n: httpx.Response(200, json={"oops": 1}))

@@ -19,8 +19,10 @@ CITE_CAP = 0.75
 MAX_ANSWER_CHARS = 10000
 FIELDS = [
     "id", "category", "dialog", "question", "answer", "golden", "score", "judge_score", "fabricated",
-    "reason", "cite_missing", "forbidden_hit", "words", "status", "error", "seconds",
+    "reason", "cite_missing", "forbidden_hit", "words", "status", "json_ok", "calls", "error", "seconds",
 ]
+REFUSAL_STATUSES = ("no_info", "off_topic", "error")
+REFUSAL_CATEGORIES = ("no_info", "off_topic")
 
 JUDGE_SYSTEM = """Ты — строгий и справедливый судья качества юридического ассистента.
 Тебе дают ВОПРОС, ЭТАЛОН (проверенный верный ответ), при необходимости ОБЯЗАТЕЛЬНЫЕ ССЫЛКИ и ОТВЕТ АССИСТЕНТА.
@@ -175,11 +177,11 @@ def judge(client: httpx.Client, case: dict, answer: str) -> dict:
     raise RuntimeError(str(last))
 
 
-def pipeline_answer(question: str) -> tuple[str, str]:
+def pipeline_answer(question: str) -> tuple[str, str, dict]:
     from pipeline import answer_question
 
     result = answer_question(question)
-    return str(result.get("answer", "")), str(result.get("status", ""))
+    return str(result.get("answer", "")), str(result.get("status", "")), result.get("debug") or {}
 
 
 def deterministic(case: dict, answer: str) -> dict:
@@ -211,13 +213,14 @@ def final_score(det: dict, verdict: dict | None) -> float | None:
 def evaluate_case(client: httpx.Client, case: dict, mode: str, answers: dict[str, str], use_judge: bool) -> dict:
     started = time.monotonic()
     answer, status, error = "", "", ""
+    debug: dict = {}
     try:
         if mode == "golden":
             answer, status = case["golden"], "golden"
         elif mode == "file":
             answer, status = answers.get(case["id"], ""), "file"
         else:
-            answer, status = pipeline_answer(case["question"])
+            answer, status, debug = pipeline_answer(case["question"])
     except Exception as exc:
         error = f"{type(exc).__name__}: {' '.join(str(exc).split())[:150]}"
         status = "error"
@@ -230,12 +233,12 @@ def evaluate_case(client: httpx.Client, case: dict, mode: str, answers: dict[str
         except Exception as exc:
             error = (error + " | " if error else "") + f"judge: {type(exc).__name__}: {' '.join(str(exc).split())[:120]}"
             status = "judge_error"
-            return row(case, answer, status, error, det, None, None, time.monotonic() - started)
-    return row(case, answer, status, error, det, verdict, final_score(det, verdict), time.monotonic() - started)
+            return row(case, answer, status, error, det, None, None, time.monotonic() - started, debug)
+    return row(case, answer, status, error, det, verdict, final_score(det, verdict), time.monotonic() - started, debug)
 
 
 def row(case: dict, answer: str, status: str, error: str, det: dict, verdict: dict | None,
-        score: float | None, seconds: float) -> dict:
+        score: float | None, seconds: float, debug: dict) -> dict:
     return {
         "id": case["id"],
         "category": case["category"],
@@ -251,6 +254,8 @@ def row(case: dict, answer: str, status: str, error: str, det: dict, verdict: di
         "forbidden_hit": "; ".join(det["forbidden_hit"]),
         "words": det["words"],
         "status": status,
+        "json_ok": "" if "json_ok" not in debug else int(bool(debug["json_ok"])),
+        "calls": debug.get("calls", ""),
         "error": error,
         "seconds": round(seconds, 1),
     }
@@ -306,6 +311,29 @@ def print_summary(rows: list[dict]) -> None:
         print(f"  {r['id']:>4} {r['category']:<13} {float(r['score']):.2f}  {q} | {r['reason'][:110] or r['forbidden_hit'] or r['error']}")
 
 
+def print_statuses(rows: list[dict]) -> None:
+    from pipeline import FALLBACK
+
+    total = len(rows)
+    counts: dict[str, int] = defaultdict(int)
+    for r in rows:
+        counts[r["status"]] += 1
+    print("\nстатусы ответов: " + ", ".join(f"{name} {value}" for name, value in sorted(counts.items(), key=lambda x: -x[1])))
+    fallback = [r for r in rows if r["answer"] == FALLBACK]
+    unparsed = [r for r in rows if r["json_ok"] == 0]
+    second = [r for r in rows if r["calls"] == 2]
+    print(f"запасной ответ: {len(fallback)}/{total}; JSON не разобран (текст как есть): {len(unparsed)}/{total}; повторный вызов из-за формата: {len(second)}/{total}")
+    refused = [r for r in rows if r["status"] in REFUSAL_STATUSES]
+    wrong = [r for r in refused if r["category"] not in REFUSAL_CATEGORIES]
+    expected = sum(1 for r in rows if r["category"] in REFUSAL_CATEGORIES)
+    print(f"отказов (no_info, off_topic, error): {len(refused)}/{total}, ожидалось по эталону {expected}; отказ при наличии ответа в базе: {len(wrong)}")
+    for r in wrong:
+        print(f"  {r['id']:>4} {r['category']:<13} {r['status']:<9} {' '.join(r['answer'].split())[:150]}")
+    missed = [r for r in rows if r["category"] in REFUSAL_CATEGORIES and r["status"] not in REFUSAL_STATUSES]
+    if missed:
+        print(f"ответ по существу там, где эталон — отказ: {len(missed)}: " + ", ".join(f"{r['id']} ({r['status']})" for r in missed))
+
+
 def print_line(name: str, rs: list[dict]) -> None:
     vals = [float(r["score"]) for r in rs if r["score"] != ""]
     fab = sum(1 for r in rs if r["fabricated"] == 1)
@@ -343,6 +371,8 @@ def main() -> None:
     rows = run_all(cases, mode, answers, use_judge)
     write_report(Path(args.report), rows)
     print_summary(rows)
+    if mode == "pipeline":
+        print_statuses(rows)
     print(f"\nрежим: {mode}, судья: {'да' if use_judge else 'нет'}, время: {time.monotonic() - started:.0f} с, отчёт: {args.report}")
 
 

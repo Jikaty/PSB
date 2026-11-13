@@ -31,7 +31,13 @@ HINT_NOTHING = "поиск не нашёл близких по теме поло
 CLOSING_TAG = re.compile(r"</(?=\s*(?:doc|fragment|history|question)\b)", re.I)
 HAS_REFERENCE = re.compile(r"источник|(?<!\w)(?:п|ст|ч)\.\s*\d|(?<!\w)(?:пункт|стать|част)\w*\s+\d", re.I)
 ANSWER_FIELD = re.compile(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)', re.S)
-MARKDOWN_LINE = re.compile(r"^\s*(?:#{1,6}\s+|[-*•]\s+|>\s+)", re.M)
+ANSWER_CLOSED = re.compile(
+    r'"answer"\s*:\s*"(.*?)"\s*(?:,\s*"(?:type|citations|missing)"\s*:|\}\s*(?:```)?\s*$)', re.S | re.I
+)
+ANSWER_SINGLE = re.compile(r"'answer'\s*:\s*'(.*?)'\s*(?:,\s*'(?:type|citations|missing)'\s*:|\}\s*(?:```)?\s*$)", re.S | re.I)
+SALVAGE_TYPE =re.compile(r'"type"\s*:\s*"\s*(' + "|".join(TYPES) + r')\s*"', re.I)
+ANSWER_KEYS = ("answer", "ответ", "final_answer", "response", "text", "output", "result")
+MARKDOWN_LINE =re.compile(r"^\s*(?:#{1,6}\s+|[-*•]\s+|>\s+)", re.M)
 MARKDOWN_INLINE = re.compile(r"\*\*|__|`+")
 DOC_ID = re.compile(r"d\d+", re.I)
 ID_LEAK = re.compile(r"\s*\((?:[а-яё]+\.?\s*)?(?:d\.?\s?\d{1,3}|д\.?\s?0\d)\)", re.I)
@@ -165,36 +171,92 @@ def get_engine() -> Engine:
         return _engine
 
 
-def parse_json(text: str) -> dict | None:
-    decoder = json.JSONDecoder()
+def answer_key(data: dict, names: tuple[str, ...]) -> str | None:
+    for key in data:
+        if isinstance(key, str) and key.strip().lower() in names:
+            return key
+    return None
+
+
+def answer_text(value: object, depth: int = 0) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, list) and depth < 2:
+        return " ".join(part for part in (answer_text(item, depth + 1) for item in value) if part)
+    if isinstance(value, dict) and depth < 2:
+        key = answer_key(value, ANSWER_KEYS)
+        return answer_text(value[key], depth + 1) if key else ""
+    return ""
+
+
+def normalize(data: dict, key: str) -> dict:
+    result = {str(name).strip().lower(): value for name, value in data.items() if name != key}
+    result["answer"] = answer_text(data[key])
+    return result
+
+
+def json_objects(text: str) -> list[dict]:
+    decoder = json.JSONDecoder(strict=False)
+    found = []
     for match in re.finditer(r"\{", text):
         try:
             data, _ = decoder.raw_decode(text, match.start())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
-        if isinstance(data, dict) and "answer" in data:
-            return data
+        if isinstance(data, dict):
+            found.append(data)
+    return found
+
+
+def parse_json(text: str, depth: int = 0) -> dict | None:
+    found = json_objects(text)
+    for names in (ANSWER_KEYS[:1], ANSWER_KEYS):
+        for data in found:
+            key = answer_key(data, names)
+            if key is None or (len(names) > 1 and not answer_text(data[key]).strip()):
+                continue
+            result = normalize(data, key)
+            nested = depth < 1 and result["answer"].lstrip().startswith("{")
+            return (parse_json(result["answer"], depth + 1) if nested else None) or result
     return None
 
 
 def salvage(text: str) -> str:
-    match = ANSWER_FIELD.search(text)
+    match = ANSWER_CLOSED.search(text) or ANSWER_FIELD.search(text) or ANSWER_SINGLE.search(text)
     if not match:
-        return re.sub(r"^```\w*|```$", "", text.strip()).strip()
+        plain = re.sub(r"^```\w*|```$", "", text.strip()).strip()
+        return "" if plain.startswith(("{", "[")) else plain
     body = match.group(1)
     try:
-        return json.loads('"' + body + '"')
+        return json.loads('"' + body + '"', strict=False)
     except json.JSONDecodeError:
         return body.replace('\\"', '"').replace("\\n", " ")
 
 
+def salvage_data(text: str) -> dict:
+    kind = SALVAGE_TYPE.search(text)
+    return {"type": kind.group(1).lower() if kind else "answer", "answer": salvage(text), "citations": [], "missing": ""}
+
+
+def first_reply(engine: Engine, messages: list[dict]) -> str:
+    try:
+        return llm_client.chat(engine.client, engine.settings, messages)
+    except llm_client.EmptyCompletion as exc:
+        if parse_json(exc.reasoning) is None:
+            raise
+        llm_client.count("/chat/completions answer from reasoning")
+        return exc.reasoning
+
+
 def generate(engine: Engine, messages: list[dict], extra_calls: bool = True) -> tuple[dict, dict]:
     info = {"calls": 1, "json_ok": True}
-    text = llm_client.chat(engine.client, engine.settings, messages)
+    text = first_reply(engine, messages)
     data = parse_json(text)
     if data is None and not extra_calls:
         info["json_ok"] = False
-        data = {"type": "answer", "answer": salvage(text), "citations": [], "missing": ""}
+        data = salvage_data(text)
     if data is None:
         info["calls"] = 2
         retry = messages + [{"role": "assistant", "content": text}, {"role": "user", "content": prompts.FORMAT_REMINDER}]
@@ -205,7 +267,7 @@ def generate(engine: Engine, messages: list[dict], extra_calls: bool = True) -> 
         data = parse_json(second)
         if data is None:
             info["json_ok"] = False
-            data = {"type": "answer", "answer": salvage(second) or salvage(text), "citations": [], "missing": ""}
+            data = salvage_data(second) if salvage(second) else salvage_data(text)
     return data, info
 
 
