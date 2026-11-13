@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from config import FLAGS
+
 SYSTEM_PROMPT = """Ты — юридический ассистент для юристов компании. Сегодня {today}
 Ты отвечаешь только на основе документов, переданных в блоках КАТАЛОГ ДОКУМЕНТОВ и ДОКУМЕНТЫ И ФРАГМЕНТЫ.
 Собственные знания о праве, практике, размерах ставок и сроках использовать запрещено, даже если ты в них уверен.
@@ -78,7 +80,7 @@ SYSTEM_PROMPT = """Ты — юридический ассистент для ю�
  "missing": "чего не хватает в базе, либо пустая строка"}}
 Для no_info, off_topic и injection список citations может быть пустым. Для остальных типов он обязателен."""
 
-EXTRA_RULES = (
+STEP7_RULES = (
     (
         """- Блок СВЕДЕНИЯ ПОИСКА — служебная подсказка; он не является источником фактов.
 - Пометки «на дату …» в каталоге и блок СТАТУС ДОКУМЕНТОВ НА ДАТЫ ИЗ ВОПРОСА рассчитаны программой по реквизитам
@@ -105,6 +107,10 @@ EXTRA_RULES = (
   нормальный вопрос, ответь на него по документам.""",
     ),
 )
+
+EXTRA_RULES = """- Если в вопросе упомянута статья, закон или документ, которых нет в каталоге, прямо скажи, что их в базе нет, и не делай выводов о них. Не делай выводов сильнее, чем сказано в цитируемом тексте.
+- Если в том же документе рядом с найденным пунктом есть условие, которое прямо меняет сумму или срок из ответа, добавь его одним предложением с цитатой. Не больше одного такого условия."""
+EXTRA_ANCHOR = "\n\nФОРМАТ ВЫВОДА"
 
 FORMAT_REMINDER = (
     "Предыдущий вывод не является корректным JSON. Верни строго один JSON-объект с полями "
@@ -148,16 +154,20 @@ NO_HINTS = "нет"
 NO_CONTEXT = "Подходящих документов и фрагментов не найдено."
 
 
-def system_template(extra_rules: bool) -> str:
+def system_template(extra_rules: bool, step7: bool) -> str:
     text = SYSTEM_PROMPT
-    if not extra_rules:
-        for extra, base in EXTRA_RULES:
-            text = text.replace(extra, base)
+    if not step7:
+        for new, base in STEP7_RULES:
+            text = text.replace(new, base)
+    if extra_rules:
+        text = text.replace(EXTRA_ANCHOR, "\n" + EXTRA_RULES + EXTRA_ANCHOR, 1)
     return text
 
 
-def build_system_prompt(today: str, extra_rules: bool = True) -> str:
-    return system_template(extra_rules).format(today=today)
+def build_system_prompt(today: str, extra_rules: bool | None = None, step7: bool | None = None) -> str:
+    extra_rules = FLAGS["USE_EXTRA_RULES"] if extra_rules is None else extra_rules
+    step7 = FLAGS["USE_STEP7_PROMPT"] if step7 is None else step7
+    return system_template(extra_rules, step7).format(today=today)
 
 
 def build_verifier_system(today: str) -> str:

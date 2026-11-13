@@ -15,7 +15,7 @@ os.chdir(ROOT)
 os.environ["LLM_REASONING_EFFORT"] = ""
 FLAG_NAMES = (
     "USE_REASONING_EXTRACT", "USE_NO_FORMAT_RETRY", "USE_INJECTION_STRIP", "USE_TIMELINE", "USE_VERIFIER",
-    "USE_SELF_CHECK", "USE_EXTRA_RULES",
+    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES",
 )
 for flag_name in FLAG_NAMES:
     os.environ.pop(flag_name, None)
@@ -46,7 +46,7 @@ def check(name, cond):
 
 DEFAULTS = dict(config.FLAG_DEFAULTS)
 check("flag names", tuple(DEFAULTS) == FLAG_NAMES)
-check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:6]) and DEFAULTS["USE_EXTRA_RULES"] is False)
+check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False)
 check("loaded defaults", FLAGS == DEFAULTS and config.load_flags() == DEFAULTS)
 check("no flags.py in repo", not os.path.exists(os.path.join(ROOT, "flags.py")))
 check("parse on", all(config.parse_flag(v, False) for v in ("1", "true", "True", " YES ", "on", True)))
@@ -76,12 +76,29 @@ check("env beats flags.py", config.load_flags()["USE_TIMELINE"] is True)
 del os.environ["USE_TIMELINE"], sys.modules["flags"]
 check("back to defaults", config.load_flags() == DEFAULTS)
 
-check("extra rules: three pairs", len(prompts.EXTRA_RULES) == 3)
-check("extra rules present once", all(prompts.SYSTEM_PROMPT.count(extra) == 1 for extra, _ in prompts.EXTRA_RULES))
-check("base rules absent in full prompt", all(base not in prompts.SYSTEM_PROMPT for _, base in prompts.EXTRA_RULES))
-full, base = prompts.build_system_prompt("1 января 2026 г.", True), prompts.build_system_prompt("1 января 2026 г.", False)
-check("full prompt unchanged", full == prompts.SYSTEM_PROMPT.format(today="1 января 2026 г.") == prompts.build_system_prompt("1 января 2026 г."))
-check("base prompt has old rules", all(old in base for _, old in prompts.EXTRA_RULES) and all(extra not in base for extra, _ in prompts.EXTRA_RULES))
+TODAY = "1 января 2026 г."
+check("step 7 rules: three pairs", len(prompts.STEP7_RULES) == 3)
+check("step 7 rules present once", all(prompts.SYSTEM_PROMPT.count(new) == 1 for new, _ in prompts.STEP7_RULES))
+check("base rules absent in full prompt", all(old not in prompts.SYSTEM_PROMPT for _, old in prompts.STEP7_RULES))
+full, base = prompts.build_system_prompt(TODAY, False, True), prompts.build_system_prompt(TODAY, False, False)
+check("default prompt = S2 prompt", full == prompts.SYSTEM_PROMPT.format(today=TODAY) == prompts.build_system_prompt(TODAY))
+check("base prompt has old rules", all(old in base for _, old in prompts.STEP7_RULES) and all(new not in base for new, _ in prompts.STEP7_RULES))
+RULE_A = "Если в вопросе упомянута статья, закон или документ, которых нет в каталоге, прямо скажи, что их в базе нет, и не делай выводов о них. Не делай выводов сильнее, чем сказано в цитируемом тексте."
+RULE_B = "Если в том же документе рядом с найденным пунктом есть условие, которое прямо меняет сумму или срок из ответа, добавь его одним предложением с цитатой. Не больше одного такого условия."
+check("extra rules text", prompts.EXTRA_RULES == "- " + RULE_A + "\n- " + RULE_B)
+check("extra rules off by default", RULE_A not in full and RULE_B not in full and RULE_A not in base)
+extra_full, extra_base = prompts.build_system_prompt(TODAY, True, True), prompts.build_system_prompt(TODAY, True, False)
+check("extra rules appended once", extra_full.count(RULE_A) == 1 and extra_full.count(RULE_B) == 1 and extra_base.count(RULE_A) == 1 and extra_base.count(RULE_B) == 1)
+check("extra rules only add text", extra_full.replace("\n" + prompts.EXTRA_RULES, "") == full and extra_base.replace("\n" + prompts.EXTRA_RULES, "") == base)
+check("extra rules before format block", extra_full.index(RULE_A) < extra_full.index(RULE_B) < extra_full.index("ФОРМАТ ВЫВОДА") and extra_full.index("На прямой вопрос") < extra_full.index(RULE_A))
+check("extra rules as bullets", ("если документ даёт однозначный ответ.\n- " + RULE_A + "\n- " + RULE_B + "\n\nФОРМАТ ВЫВОДА") in extra_full)
+check("extra prompt formats", "{today}" not in extra_full and '{"type"' in extra_full and "{{" not in extra_full)
+saved_flags = dict(FLAGS)
+FLAGS.update(USE_EXTRA_RULES=True, USE_STEP7_PROMPT=False)
+check("prompt reads flags", prompts.build_system_prompt(TODAY) == extra_base and prompts.build_system_prompt(TODAY, False) == base)
+FLAGS.clear()
+FLAGS.update(saved_flags)
+check("prompts shares FLAGS", prompts.FLAGS is FLAGS and prompts.build_system_prompt(TODAY) == full)
 check("base prompt: no programme marks", "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not in base and "Один только отказ" not in base and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" in full)
 check("base prompt keeps the rest", "ФОРМАТ ВЫВОДА" in base and '{"type"' in base and "1 января 2026 г." in base and "{today}" not in base)
 check("base prompt keeps step 5 rules", "Сверь предмет вопроса с предметом документа" in base and "7. Законы есть только" in base)
@@ -158,9 +175,16 @@ check("same FLAGS object everywhere", pipeline.FLAGS is FLAGS and llm_client.FLA
 
 res, seen = run([main_reply(OK_TEXT)])
 check("default: answer", res["answer"] == OK_TEXT and res["status"] == "answer" and len(seen) == 1)
-check("default: base system prompt", system(seen) == prompts.build_system_prompt(pipeline.today_text(), False))
+NOW = pipeline.today_text()
+check("default: S2 system prompt", system(seen) == prompts.SYSTEM_PROMPT.format(today=NOW) and RULE_A not in system(seen))
 res, seen = run([main_reply(OK_TEXT)], USE_EXTRA_RULES=True)
-check("extra rules on: full system prompt", system(seen) == prompts.build_system_prompt(pipeline.today_text(), True) and res["answer"] == OK_TEXT)
+check("extra rules on", system(seen) == prompts.build_system_prompt(NOW, True, True) and RULE_A in system(seen) and RULE_B in system(seen) and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" in system(seen) and res["answer"] == OK_TEXT)
+res, seen = run([main_reply(OK_TEXT)], USE_STEP7_PROMPT=False)
+check("step 7 prompt off", system(seen) == prompts.build_system_prompt(NOW, False, False) and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not in system(seen) and RULE_A not in system(seen) and res["answer"] == OK_TEXT)
+res, seen = run([main_reply(OK_TEXT)], USE_STEP7_PROMPT=False, USE_EXTRA_RULES=True)
+check("step 7 prompt off, extra on", system(seen) == prompts.build_system_prompt(NOW, True, False) and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not in system(seen) and RULE_B in system(seen))
+res, seen = run([main_reply(BAD_TEXT), verdict("ok")], USE_EXTRA_RULES=True)
+check("extra rules not in verifier prompt", len(seen) == 2 and RULE_A not in seen[1]["messages"][0]["content"])
 check("flags restored after run", FLAGS == DEFAULTS)
 
 res, seen = run([main_reply(BAD_TEXT), verdict("fix", OK_TEXT)])
@@ -247,11 +271,11 @@ res, seen = run(
 check("all off: no crash, fallback", res["status"] == "error" and len(seen) == 3)
 res, seen = run(
     [main_reply(BAD_TEXT)], dated, USE_REASONING_EXTRACT=False, USE_NO_FORMAT_RETRY=False, USE_INJECTION_STRIP=False,
-    USE_TIMELINE=False, USE_VERIFIER=False, USE_SELF_CHECK=False,
+    USE_TIMELINE=False, USE_VERIFIER=False, USE_SELF_CHECK=False, USE_STEP7_PROMPT=False,
 )
-check("all off: raw answer", res["answer"] == BAD_TEXT and len(seen) == 1 and "на дату «" not in user(seen))
+check("all off: raw answer", res["answer"] == BAD_TEXT and len(seen) == 1 and "на дату «" not in user(seen) and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not in system(seen))
 res, seen = run([main_reply(OK_TEXT), verdict("ok")], inj, **{name: True for name in FLAG_NAMES})
-check("all on", res["answer"] == verifier.REFUSAL + " " + OK_TEXT and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" in system(seen))
+check("all on", res["answer"] == verifier.REFUSAL + " " + OK_TEXT and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" in system(seen) and RULE_A in system(seen))
 
 
 def build(*args):
@@ -278,7 +302,7 @@ try:
         names = z.namelist()
     check("zip without --flags: no flags.py", done.returncode == 0 and "flags.py" not in names and "solution.py" in names and "config.py" in names)
     check("zip flat", all("/" not in name and "\\" not in name for name in names) and "requirements_start.txt" in names)
-    check("zip prints defaults", "USE_VERIFIER=1" in done.stdout and "USE_EXTRA_RULES=0" in done.stdout and "без flags.py" in done.stdout and "Коммит: " in done.stdout)
+    check("zip prints defaults", "USE_VERIFIER=1" in done.stdout and "USE_STEP7_PROMPT=1 USE_EXTRA_RULES=0" in done.stdout and "без flags.py" in done.stdout and "Коммит: " in done.stdout)
     with tempfile.TemporaryDirectory() as folder:
         with zipfile.ZipFile(archive) as z:
             z.extractall(folder)
@@ -291,9 +315,9 @@ try:
     exec(source, scope)
     check("zip --flags alone: explicit defaults", done.returncode == 0 and names.count("flags.py") == 1 and {n: scope[n] for n in FLAG_NAMES} == DEFAULTS)
 
-    done = build("--flags", "USE_VERIFIER=0", "USE_SELF_CHECK=0,USE_EXTRA_RULES=1")
-    expected = {**DEFAULTS, "USE_VERIFIER": False, "USE_SELF_CHECK": False, "USE_EXTRA_RULES": True}
-    check("zip --flags prints config", done.returncode == 0 and "USE_VERIFIER=0" in done.stdout and "USE_SELF_CHECK=0" in done.stdout and "USE_EXTRA_RULES=1" in done.stdout and "USE_TIMELINE=1" in done.stdout)
+    done = build("--flags", "USE_VERIFIER=0", "USE_SELF_CHECK=0,USE_EXTRA_RULES=1", "USE_STEP7_PROMPT=0")
+    expected = {**DEFAULTS, "USE_VERIFIER": False, "USE_SELF_CHECK": False, "USE_EXTRA_RULES": True, "USE_STEP7_PROMPT": False}
+    check("zip --flags prints config", done.returncode == 0 and "USE_VERIFIER=0" in done.stdout and "USE_SELF_CHECK=0" in done.stdout and "USE_EXTRA_RULES=1" in done.stdout and "USE_STEP7_PROMPT=0" in done.stdout and "USE_TIMELINE=1" in done.stdout)
     with tempfile.TemporaryDirectory() as folder:
         with zipfile.ZipFile(archive) as z:
             z.extractall(folder)

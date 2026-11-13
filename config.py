@@ -43,6 +43,7 @@ FLAG_DEFAULTS = {
     "USE_TIMELINE": True,
     "USE_VERIFIER": True,
     "USE_SELF_CHECK": True,
+    "USE_STEP7_PROMPT": True,
     "USE_EXTRA_RULES": False,
 }
 FLAG_ON = ("1", "true", "yes", "on")
