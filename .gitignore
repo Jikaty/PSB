@@ -1,0 +1,9 @@
+.env
+data/
+reference/
+submit.zip
+submission.csv
+eval_report.csv
+__pycache__/
+.venv/
+*.pyc
