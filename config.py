@@ -78,6 +78,13 @@ def flags_text(values: dict[str, bool]) -> str:
     return " ".join(f"{name}={int(value)}" for name, value in values.items())
 
 
+RERANKER_FALLBACKS = ("cohere/rerank-5-fast", "qwen/qwen3-reranker-8b", "Qwen/Qwen3-Reranker-8B")
+
+
+def reranker_candidates(first: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(name for name in (first, *RERANKER_FALLBACKS) if name))
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -88,6 +95,7 @@ class Settings:
     llm_model: str
     emb_model: str
     reranker_model: str
+    reranker_models: tuple[str, ...]
     temperature: float
     max_tokens: int
     max_workers: int
@@ -107,7 +115,8 @@ def load_settings() -> Settings:
         rerank_key=env("RERANKER_API_KEY") or llm_key,
         llm_model=env("LLM_MODEL", "GEN_MODEL", "OPENAI_MODEL", default="deepseek/deepseek-v4.1-flash"),
         emb_model=env("EMB_MODEL", default="baai/bge-m3"),
-        reranker_model=env("RERANKER_MODEL", default="cohere/rerank-5-fast"),
+        reranker_model=reranker_candidates(env("RERANKER_MODEL"))[0],
+        reranker_models=reranker_candidates(env("RERANKER_MODEL")),
         temperature=env_float("TEMPERATURE", 0.0, 0.0, 2.0),
         max_tokens=env_int("MAX_TOKENS", 1024, 128, 8192),
         max_workers=env_int("MAX_WORKERS", 4, 1, 8),

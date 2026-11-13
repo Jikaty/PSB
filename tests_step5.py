@@ -41,6 +41,7 @@ settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", em
 
 
 def make(handler):
+    llm_client.RERANK_MODEL.reset()
     client = httpx.Client(transport=httpx.MockTransport(handler))
     retr = search.Retriever(docs, chunks, settings, client, use_embeddings=False)
     return client, retr
@@ -60,9 +61,10 @@ for status in (400, 404):
     client, retr = make(h)
     r = retr.search("срок испытания главного бухгалтера")
     check(f"rerank {status} off", retr.reranker_off and r.flags["reranker_off"])
-    check(f"rerank {status} one call", calls.count("/rerank") == 1)
+    names = len(settings.reranker_models)
+    check(f"rerank {status} one call per name", names == 3 and calls.count("/rerank") == names)
     retr.search("срок испытания")
-    check(f"rerank {status} no more calls", calls.count("/rerank") == 1)
+    check(f"rerank {status} no more calls", calls.count("/rerank") == names)
 
 for status in (429, 500, 502, 503, 401, 403):
     calls = []

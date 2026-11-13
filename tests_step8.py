@@ -425,6 +425,78 @@ check("retry: less than pause left -> skipped", calls["q1"] == 1 and answers[0] 
 solution.OUTPUT = real_output
 
 
+RERANK_NAMES = ("env/model", "cohere/rerank-5-fast", "qwen/qwen3-reranker-8b", "Qwen/Qwen3-Reranker-8B")
+check("reranker candidates from env", config.reranker_candidates("env/model") == RERANK_NAMES)
+check("reranker candidates default", config.reranker_candidates("") == RERANK_NAMES[1:] and config.reranker_candidates("qwen/qwen3-reranker-8b") == RERANK_NAMES[2:3] + RERANK_NAMES[1:2] + RERANK_NAMES[3:])
+check("settings first candidate", SETTINGS.reranker_model == SETTINGS.reranker_models[0] and len(SETTINGS.reranker_models) >= 3)
+
+
+def rerank_run(answer_for, names=RERANK_NAMES[1:], searches=1, threads=1):
+    llm_client.RERANK_MODEL.reset()
+    asked = []
+    lock = __import__("threading").Lock()
+
+    def handler(request):
+        if request.url.path != "/rerank":
+            return httpx.Response(404, json={})
+        body = json.loads(request.content)
+        with lock:
+            asked.append(body["model"])
+        status = answer_for(body["model"])
+        if status != 200:
+            return httpx.Response(status, json={})
+        n = len(body["documents"])
+        return httpx.Response(200, json={"results": [{"index": i, "relevance_score": 1.0 - i / 100} for i in reversed(range(n))]})
+
+    rs = dataclasses.replace(settings, reranker_model=names[0], reranker_models=tuple(names))
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    retr = search.Retriever(docs, chunks, rs, client, use_embeddings=False)
+    lines = []
+    real_print = __builtins__.print if hasattr(__builtins__, "print") else print
+    results = []
+    import builtins
+    builtins.print = lambda *a, **k: lines.append(" ".join(map(str, a)))
+    try:
+        if threads == 1:
+            results = [retr.search("срок испытания главного бухгалтера") for _ in range(searches)]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(threads) as pool:
+                results = list(pool.map(lambda _: retr.search("срок испытания главного бухгалтера"), range(searches)))
+    finally:
+        builtins.print = real_print
+    return retr, asked, lines, results
+
+
+third = RERANK_NAMES[3]
+retr, asked, lines, results = rerank_run(lambda name: 200 if name == third else 404, searches=3)
+check("rerank: 404, 404, 200 -> third pinned", llm_client.RERANK_MODEL.pinned == third and asked == list(RERANK_NAMES[1:]) + [third, third])
+check("rerank: reranker used", not retr.reranker_off and all(not r.flags["reranker_off"] for r in results))
+check("rerank: log pinned", "Реранкер: закреплена модель " + third in lines and sum("отклонена (статус 404)" in line for line in lines) == 2)
+retr, asked, lines, results = rerank_run(lambda name: 200 if name == "env/model" else 404, names=RERANK_NAMES, searches=2)
+check("rerank: env name first", asked == ["env/model", "env/model"] and llm_client.RERANK_MODEL.pinned == "env/model")
+retr, asked, lines, results = rerank_run(lambda name: 400 if name == RERANK_NAMES[1] else 200)
+check("rerank: 400 switches", asked == list(RERANK_NAMES[1:3]) and llm_client.RERANK_MODEL.pinned == RERANK_NAMES[2])
+retr, asked, lines, results = rerank_run(lambda name: 404, searches=3)
+check("rerank: all rejected -> off", retr.reranker_off and asked == list(RERANK_NAMES[1:]) and llm_client.RERANK_MODEL.pinned == "")
+check("rerank: all rejected log", any("Реранкер отключён: статус 404" in line for line in lines))
+retr, asked, lines, results = rerank_run(lambda name: 503 if name == RERANK_NAMES[1] else 200, searches=2)
+check("rerank: 5xx no switch", set(asked) == {RERANK_NAMES[1]} and len(asked) == 8 and not retr.reranker_off and llm_client.RERANK_MODEL.pinned == "")
+retr, asked, lines, results = rerank_run(lambda name: 429 if name == RERANK_NAMES[1] else 200)
+check("rerank: 429 no switch", set(asked) == {RERANK_NAMES[1]} and len(asked) == 4)
+retr, asked, lines, results = rerank_run(lambda name: 401 if name == RERANK_NAMES[1] else 200)
+check("rerank: 401 no switch", asked == [RERANK_NAMES[1]] and not retr.reranker_off)
+state = {"pinned": False}
+retr, asked, lines, results = rerank_run(lambda name: 200 if name == RERANK_NAMES[2] else 404, searches=2)
+retr, asked, lines, results = rerank_run(lambda name: 200 if name == RERANK_NAMES[2] else 404, searches=1)
+llm_client.RERANK_MODEL.pinned = RERANK_NAMES[2]
+check("rerank: pinned survives", llm_client.RERANK_MODEL.next_name(RERANK_NAMES[1:]) == RERANK_NAMES[2])
+retr, asked, lines, results = rerank_run(lambda name: 200 if name == third else 404, searches=16, threads=8)
+check("rerank: threads pin once", llm_client.RERANK_MODEL.pinned == third and sum("закреплена" in line for line in lines) == 1 and not retr.reranker_off)
+check("rerank: threads all reranked", all(not r.flags["reranker_off"] for r in results) and asked.count(RERANK_NAMES[1]) <= 8 and asked[-1] == third)
+llm_client.RERANK_MODEL.reset()
+
+
 def build(*args):
     return subprocess.run(
         [sys.executable, "-X", "utf8", os.path.join(ROOT, "make_zip.py"), "--out", "submit_step8_test.zip", *args],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 import threading
 import time
 from collections import Counter
@@ -31,6 +32,44 @@ class EmptyCompletion(ValueError):
 
 
 CLIENT_ERRORS = (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError)
+RERANK_SWITCH_STATUSES = (400, 404)
+
+
+@dataclass
+class RerankModel:
+    tried: set[str]
+    pinned: str = ""
+    rejected: Exception | None = None
+    lock: threading.Lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self.lock:
+            self.tried.clear()
+            self.pinned = ""
+            self.rejected = None
+
+    def next_name(self, candidates: tuple[str, ...]) -> str:
+        with self.lock:
+            if self.pinned:
+                return self.pinned
+            return next((name for name in candidates if name not in self.tried), "")
+
+    def reject(self, name: str, exc: httpx.HTTPStatusError) -> None:
+        with self.lock:
+            self.rejected = exc
+            if not self.pinned and name not in self.tried:
+                self.tried.add(name)
+                status = exc.response.status_code
+                print(f"Реранкер: модель {name} отклонена (статус {status})", file=sys.stderr, flush=True)
+
+    def pin(self, name: str) -> None:
+        with self.lock:
+            if not self.pinned:
+                self.pinned = name
+                print(f"Реранкер: закреплена модель {name}", file=sys.stderr, flush=True)
+
+
+RERANK_MODEL = RerankModel(set())
 
 
 @dataclass
@@ -254,13 +293,20 @@ def rerank(
     timeout: float | None = 30.0,
     until: float | None = None,
 ) -> list[tuple[int, float]]:
-    payload = {
-        "model": settings.reranker_model,
-        "query": query,
-        "documents": documents,
-        "top_n": min(top_n, len(documents)),
-    }
-    result = post_json(client, settings, "/rerank", settings.rerank_key, payload, retries, timeout, until)
+    candidates = settings.reranker_models or (settings.reranker_model,)
+    while True:
+        name = RERANK_MODEL.next_name(candidates)
+        if not name:
+            raise RERANK_MODEL.rejected or ValueError("no reranker model")
+        payload = {"model": name, "query": query, "documents": documents, "top_n": min(top_n, len(documents))}
+        try:
+            result = post_json(client, settings, "/rerank", settings.rerank_key, payload, retries, timeout, until)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in RERANK_SWITCH_STATUSES or RERANK_MODEL.pinned == name:
+                raise
+            RERANK_MODEL.reject(name, exc)
+            continue
+        break
     items = result.get("results") or result.get("data") or []
     ranked = []
     for item in items:
@@ -270,4 +316,5 @@ def rerank(
             ranked.append((index, float(score or 0.0)))
     if not ranked:
         raise ValueError("unexpected rerank response")
+    RERANK_MODEL.pin(name)
     return ranked[:top_n]
