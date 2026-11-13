@@ -15,7 +15,7 @@ os.chdir(ROOT)
 os.environ["LLM_REASONING_EFFORT"] = ""
 FLAG_NAMES = (
     "USE_REASONING_EXTRACT", "USE_NO_FORMAT_RETRY", "USE_INJECTION_STRIP", "USE_TIMELINE", "USE_VERIFIER",
-    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES",
+    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES", "USE_S1_CHAT",
 )
 for flag_name in FLAG_NAMES:
     os.environ.pop(flag_name, None)
@@ -46,13 +46,13 @@ def check(name, cond):
 
 DEFAULTS = dict(config.FLAG_DEFAULTS)
 check("flag names", tuple(DEFAULTS) == FLAG_NAMES)
-check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False)
+check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is False)
 check("loaded defaults", FLAGS == DEFAULTS and config.load_flags() == DEFAULTS)
 check("no flags.py in repo", not os.path.exists(os.path.join(ROOT, "flags.py")))
 check("parse on", all(config.parse_flag(v, False) for v in ("1", "true", "True", " YES ", "on", True)))
 check("parse off", not any(config.parse_flag(v, True) for v in ("0", "false", "False", " no ", "OFF", False)))
 check("parse garbage keeps default", config.parse_flag("maybe", True) and not config.parse_flag("", False) and config.parse_flag(None, True))
-check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0"))
+check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=0"))
 
 os.environ["USE_VERIFIER"] = "0"
 os.environ["USE_EXTRA_RULES"] = "1"
@@ -276,6 +276,80 @@ res, seen = run(
 check("all off: raw answer", res["answer"] == BAD_TEXT and len(seen) == 1 and "на дату «" not in user(seen) and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not in system(seen))
 res, seen = run([main_reply(OK_TEXT), verdict("ok")], inj, **{name: True for name in FLAG_NAMES})
 check("all on", res["answer"] == verifier.REFUSAL + " " + OK_TEXT and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" in system(seen) and RULE_A in system(seen))
+
+
+def chat_run(replies, **flags):
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        reply = replies[min(len(seen), len(replies)) - 1]
+        if isinstance(reply, int):
+            return httpx.Response(reply, json={})
+        message, finish = reply
+        return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": finish}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    llm_client.JSON_MODE_OFF.clear()
+    llm_client.TOKENS["floor"] = 0
+    saved = dict(FLAGS)
+    FLAGS.update(flags)
+    try:
+        try:
+            return llm_client.chat(client, settings, [{"role": "user", "content": "x"}]), seen
+        except Exception as exc:
+            return exc, seen
+    finally:
+        FLAGS.clear()
+        FLAGS.update(saved)
+
+
+CUT = ({"content": '{"type": "answer", "answer": "Покупатель оплачивает'}, "length")
+FULL = ({"content": main_reply(OK_TEXT)}, "stop")
+BLANK = ({"content": "", "reasoning_content": main_reply(OK_TEXT)}, "stop")
+out, seen = chat_run([CUT, FULL], USE_S1_CHAT=True)
+check("s1 chat: max_tokens from settings", len(seen) == 1 and seen[0]["max_tokens"] == settings.max_tokens == 1024)
+check("s1 chat: cut answer returned as is", out == CUT[0]["content"] and llm_client.TOKENS["floor"] == 0)
+out, seen = chat_run([FULL], USE_S1_CHAT=True)
+check("s1 chat: max_tokens unchanged after length", seen[0]["max_tokens"] == settings.max_tokens and llm_client.TOKENS["floor"] == 0)
+out, seen = chat_run([CUT, FULL])
+check("new chat: grows after length", len(seen) == 2 and seen[0]["max_tokens"] == 1024 and seen[1]["max_tokens"] == 4096 and out == FULL[0]["content"] and llm_client.TOKENS["floor"] == 4096)
+out, seen = chat_run([BLANK], USE_S1_CHAT=True)
+check("s1 chat: blank -> 3 same requests, ValueError", len(seen) == 3 and seen[0] == seen[1] == seen[2] and type(out) is ValueError and "response_format" in seen[0])
+check("s1 chat: body fields", set(seen[0]) == {"model", "messages", "temperature", "max_tokens", "response_format"})
+out, seen = chat_run([BLANK])
+check("new chat: blank -> EmptyCompletion", isinstance(out, llm_client.EmptyCompletion) and "response_format" not in seen[1])
+out, seen = chat_run([({"content": "", "reasoning_content": "x"}, "length"), FULL], USE_S1_CHAT=True)
+check("s1 chat: blank with length -> same request", len(seen) == 2 and seen[1]["max_tokens"] == 1024 and out == FULL[0]["content"])
+out, seen = chat_run([400, FULL], USE_S1_CHAT=True)
+check("s1 chat: 400 -> without response_format", len(seen) == 2 and "response_format" not in seen[1] and out == FULL[0]["content"] and llm_client.JSON_MODE_OFF.is_set())
+out, seen = chat_run([({"content": "<think>мысли</think>" + OK_TEXT}, "stop")], USE_S1_CHAT=True)
+check("s1 chat: think stripped", out == OK_TEXT)
+
+res, seen = run([thought], USE_S1_CHAT=True)
+check("s1: no answer from reasoning", res["answer"] == pipeline.FALLBACK and res["debug"]["error"] == "ValueError" and len(seen) == 3 and all(b["max_tokens"] == 1024 for b in seen))
+res, seen = run([main_reply(OK_TEXT)], USE_S1_CHAT=True)
+check("s1: normal answer", res["answer"] == OK_TEXT and res["status"] == "answer" and len(seen) == 1)
+other_key = json.dumps({"type": "answer", "ответ": OK_TEXT, "citations": GOOD_CITES}, ensure_ascii=False)
+res, seen = run([other_key, main_reply(OK_TEXT)])
+check("new: other answer key accepted", len(seen) == 1 and res["answer"] == OK_TEXT)
+res, seen = run([other_key, main_reply(OK_TEXT)], USE_S1_CHAT=True)
+check("s1: only answer key -> format retry", len(seen) == 2 and res["answer"] == OK_TEXT)
+saved_flags = dict(FLAGS)
+FLAGS["USE_S1_CHAT"] = True
+check("s1 parse: answer key only", pipeline.parse_json(other_key) is None and pipeline.parse_json('{"Answer": "x"}') is None)
+check("s1 parse: raw dict", pipeline.parse_json('текст {"answer": "x", "Type": "answer"}') == {"answer": "x", "Type": "answer"})
+check("s1 salvage: whole text", pipeline.salvage('```json\n{"type": "no_info"}\n```') == '{"type": "no_info"}' and pipeline.salvage("просто текст") == "просто текст")
+check("s1 salvage: answer field", pipeline.salvage('{"answer": "Срок 30 дней", "citations": [') == "Срок 30 дней")
+check("s1 salvage data: type answer", pipeline.salvage_data('{"type": "no_info", "answer": "нет"') == {"type": "answer", "answer": "нет", "citations": [], "missing": ""})
+FLAGS.clear()
+FLAGS.update(saved_flags)
+check("new parse and salvage back", pipeline.parse_json(other_key)["answer"] == OK_TEXT and pipeline.salvage('{"type": "no_info"}') == "" and pipeline.salvage_data('{"type": "no_info", "answer": "нет"')["type"] == "no_info")
+cut_json = '{"type": "answer", "answer": "Срок оплаты — 30 календарных дней (п. 4.2)'
+res, seen = run([cut_json, ""], USE_S1_CHAT=True)
+check("s1: cut json salvaged", res["answer"].startswith("Срок оплаты — 30 календарных дней (п. 4.2)") and res["debug"]["json_ok"] is False and len(seen) == 4)
+res, seen = run([cut_json, "не json"], USE_S1_CHAT=True, USE_VERIFIER=False)
+check("s1: second plain text wins", res["answer"] == "не json" and len(seen) == 2)
 
 
 def build(*args):

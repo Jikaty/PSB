@@ -218,7 +218,32 @@ def json_objects(text: str) -> list[dict]:
     return found
 
 
+def parse_json_s1(text: str) -> dict | None:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            data, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "answer" in data:
+            return data
+    return None
+
+
+def salvage_s1(text: str) -> str:
+    match = ANSWER_FIELD.search(text)
+    if not match:
+        return re.sub(r"^```\w*|```$", "", text.strip()).strip()
+    body = match.group(1)
+    try:
+        return json.loads('"' + body + '"')
+    except json.JSONDecodeError:
+        return body.replace('\\"', '"').replace("\\n", " ")
+
+
 def parse_json(text: str, depth: int = 0) -> dict | None:
+    if FLAGS["USE_S1_CHAT"]:
+        return parse_json_s1(text)
     found = json_objects(text)
     for names in (ANSWER_KEYS[:1], ANSWER_KEYS):
         for data in found:
@@ -232,6 +257,8 @@ def parse_json(text: str, depth: int = 0) -> dict | None:
 
 
 def salvage(text: str) -> str:
+    if FLAGS["USE_S1_CHAT"]:
+        return salvage_s1(text)
     match = ANSWER_CLOSED.search(text) or ANSWER_FIELD.search(text) or ANSWER_SINGLE.search(text)
     if not match:
         plain = re.sub(r"^```\w*|```$", "", text.strip()).strip()
@@ -244,11 +271,13 @@ def salvage(text: str) -> str:
 
 
 def salvage_data(text: str) -> dict:
-    kind = SALVAGE_TYPE.search(text)
+    kind = None if FLAGS["USE_S1_CHAT"] else SALVAGE_TYPE.search(text)
     return {"type": kind.group(1).lower() if kind else "answer", "answer": salvage(text), "citations": [], "missing": ""}
 
 
 def first_reply(engine: Engine, messages: list[dict]) -> str:
+    if FLAGS["USE_S1_CHAT"]:
+        return llm_client.chat(engine.client, engine.settings, messages)
     try:
         return llm_client.chat(engine.client, engine.settings, messages)
     except llm_client.EmptyCompletion as exc:

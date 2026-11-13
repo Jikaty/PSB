@@ -45,6 +45,7 @@ FLAG_DEFAULTS = {
     "USE_SELF_CHECK": True,
     "USE_STEP7_PROMPT": True,
     "USE_EXTRA_RULES": False,
+    "USE_S1_CHAT": False,
 }
 FLAG_ON = ("1", "true", "yes", "on")
 FLAG_OFF = ("0", "false", "no", "off")

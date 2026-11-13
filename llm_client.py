@@ -137,6 +137,35 @@ def read_choice(result: dict) -> tuple[str, str, str]:
     return content, reasoning.strip(), str(choice.get("finish_reason") or "")
 
 
+def chat_s1(
+    client: httpx.Client, settings: Settings, messages: list[dict], json_mode: bool, timeout: float | None, until: float | None
+) -> str:
+    payload = {
+        "model": settings.llm_model,
+        "messages": messages,
+        "temperature": settings.temperature,
+        "max_tokens": settings.max_tokens,
+    }
+    if settings.reasoning_effort:
+        payload["reasoning_effort"] = settings.reasoning_effort
+    use_json = json_mode and not JSON_MODE_OFF.is_set()
+    for _ in range(3):
+        body = {**payload, "response_format": {"type": "json_object"}} if use_json else payload
+        try:
+            result = post_json(client, settings, "/chat/completions", settings.llm_key, body, timeout=timeout, until=until)
+        except httpx.HTTPStatusError as exc:
+            if use_json and exc.response.status_code in (400, 422):
+                use_json = False
+                continue
+            raise
+        if json_mode and not use_json:
+            JSON_MODE_OFF.set()
+        content = re.sub(r"<think>.*?</think>", "", result["choices"][0]["message"].get("content") or "", flags=re.S).strip()
+        if content:
+            return content
+    raise ValueError("empty completion")
+
+
 def chat(
     client: httpx.Client,
     settings: Settings,
@@ -145,6 +174,8 @@ def chat(
     timeout: float | None = CHAT_TIMEOUT,
     until: float | None = None,
 ) -> str:
+    if FLAGS["USE_S1_CHAT"]:
+        return chat_s1(client, settings, messages, json_mode, timeout, until)
     payload = {"model": settings.llm_model, "messages": messages, "temperature": settings.temperature}
     if settings.reasoning_effort:
         payload["reasoning_effort"] = settings.reasoning_effort
