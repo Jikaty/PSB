@@ -116,7 +116,14 @@ check("full answers with step7 off and extra on", all(new in prompts.build_syste
 FLAGS["USE_FULL_ANSWERS"] = True
 check("prompt reads full flag", prompts.build_system_prompt(TODAY) == long_text and prompts.build_system_prompt(TODAY, full=False) == full)
 FLAGS["USE_FULL_ANSWERS"] = False
-check("verifier prompt unchanged by full flag", "1–4 предложения" in prompts.build_verifier_system(TODAY))
+check("verifier length rule present once", prompts.VERIFIER_PROMPT.count(prompts.VERIFIER_LENGTH) == 1)
+short_ver, long_ver = prompts.build_verifier_system(TODAY, False), prompts.build_verifier_system(TODAY, True)
+check("verifier: full off by default", prompts.build_verifier_system(TODAY) == short_ver == prompts.VERIFIER_PROMPT.format(today=TODAY) and "1–4 предложения" in short_ver and "40–90 слов" not in short_ver)
+check("verifier: full on uses FULL_RULES", prompts.FULL_RULES[0][1] in long_ver and "1–4 предложения" not in long_ver and "Сплошной текст без списков" in long_ver)
+check("verifier: full on keeps the rest", long_ver.replace(prompts.VERIFIER_FULL_LENGTH, prompts.VERIFIER_LENGTH) == short_ver and "{today}" not in long_ver and '{"verdict"' in long_ver)
+FLAGS["USE_FULL_ANSWERS"] = True
+check("verifier reads full flag", prompts.build_verifier_system(TODAY) == long_ver and prompts.build_verifier_system(TODAY, False) == short_ver)
+FLAGS["USE_FULL_ANSWERS"] = False
 
 check("parse_flags empty", make_zip.parse_flags([]) == DEFAULTS)
 parsed = make_zip.parse_flags(["USE_VERIFIER=0,use_extra_rules=1", "USE_TIMELINE=off"])

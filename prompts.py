@@ -203,8 +203,14 @@ def build_system_prompt(
     return system_template(extra_rules, step7, full).format(today=today)
 
 
-def build_verifier_system(today: str) -> str:
-    return VERIFIER_PROMPT.format(today=today)
+VERIFIER_LENGTH = "- Русский язык, 1–4 предложения, сплошной текст без списков, markdown и переводов строк."
+VERIFIER_FULL_LENGTH = FULL_RULES[0][1] + "\n- Сплошной текст без списков, markdown и переводов строк."
+
+
+def build_verifier_system(today: str, full: bool | None = None) -> str:
+    full = FLAGS["USE_FULL_ANSWERS"] if full is None else full
+    text = VERIFIER_PROMPT.replace(VERIFIER_LENGTH, VERIFIER_FULL_LENGTH) if full else VERIFIER_PROMPT
+    return text.format(today=today)
 
 
 def build_blocks(
