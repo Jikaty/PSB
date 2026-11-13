@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import threading
 import time
 
 import httpx
@@ -7,6 +9,8 @@ import httpx
 from config import Settings
 
 RETRY_PAUSES = (1.0, 3.0, 7.0)
+CHAT_TIMEOUT = 120.0
+JSON_MODE_OFF = threading.Event()
 CLIENT_ERRORS = (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError)
 
 
@@ -44,8 +48,41 @@ def post_json(
     raise ValueError("no response")
 
 
-def chat(client: httpx.Client, settings: Settings, messages: list[dict], json_mode: bool = True) -> str:
-    raise NotImplementedError
+def strip_think(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+
+
+def chat(
+    client: httpx.Client,
+    settings: Settings,
+    messages: list[dict],
+    json_mode: bool = True,
+    timeout: float | None = CHAT_TIMEOUT,
+) -> str:
+    payload = {
+        "model": settings.llm_model,
+        "messages": messages,
+        "temperature": settings.temperature,
+        "max_tokens": settings.max_tokens,
+    }
+    if settings.reasoning_effort:
+        payload["reasoning_effort"] = settings.reasoning_effort
+    use_json = json_mode and not JSON_MODE_OFF.is_set()
+    for _ in range(3):
+        body = {**payload, "response_format": {"type": "json_object"}} if use_json else payload
+        try:
+            result = post_json(client, settings, "/chat/completions", settings.llm_key, body, timeout=timeout)
+        except httpx.HTTPStatusError as exc:
+            if use_json and exc.response.status_code in (400, 422):
+                use_json = False
+                continue
+            raise
+        if json_mode and not use_json:
+            JSON_MODE_OFF.set()
+        content = strip_think(result["choices"][0]["message"].get("content") or "")
+        if content:
+            return content
+    raise ValueError("empty completion")
 
 
 def embed(
@@ -70,7 +107,7 @@ def rerank(
     query: str,
     documents: list[str],
     top_n: int,
-    retries: int = 1,
+    retries: int = 3,
     timeout: float | None = 30.0,
 ) -> list[tuple[int, float]]:
     payload = {

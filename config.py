@@ -52,6 +52,7 @@ class Settings:
     top_k: int
     reranker_top_n: int
     chunker: str
+    reasoning_effort: str
 
 
 def load_settings() -> Settings:
@@ -71,6 +72,7 @@ def load_settings() -> Settings:
         top_k=env_int("TOP_K", 6, 1, 20),
         reranker_top_n=env_int("RERANKER_TOP_N", 4, 1, 10),
         chunker=env("CHUNKER", default="common"),
+        reasoning_effort=env("LLM_REASONING_EFFORT"),
     )
 
 

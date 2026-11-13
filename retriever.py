@@ -25,6 +25,7 @@ RRF_DEPTH = 60
 BOOST = 1.0
 MIN_KEEP = 6
 FAILURE_LIMIT = 3
+RERANK_OFF_STATUSES = (400, 404)
 SCORE_EXACT = 100
 SCORE_INFLECTED = 95
 SCORE_FUZZY = 88
@@ -249,15 +250,16 @@ class Retriever:
 
     def note_failure(self, kind: str, exc: Exception) -> None:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else 0
-        permanent = (400 <= status < 500 and status != 429) or not self.settings.base_url
+        unset = not self.settings.base_url
         with self.lock:
             self.failures[kind] += 1
-            if not permanent and self.failures[kind] < FAILURE_LIMIT:
+            if kind == "rerank":
+                if (status in RERANK_OFF_STATUSES or unset) and not self.reranker_off:
+                    self.reranker_off = True
+                    print(f"Реранкер отключён: статус {status}; используется порядок слияния", file=sys.stderr)
                 return
-            if kind == "rerank" and not self.reranker_off:
-                self.reranker_off = True
-                print(f"Реранкер отключён: {type(exc).__name__}; используется порядок слияния", file=sys.stderr)
-            if kind == "embeddings" and not self.embeddings_off:
+            permanent = (400 <= status < 500 and status != 429) or unset
+            if (permanent or self.failures[kind] >= FAILURE_LIMIT) and not self.embeddings_off:
                 self.embeddings_off = True
                 print(f"Эмбеддинги отключены: {type(exc).__name__}; поиск только лексический", file=sys.stderr)
 
