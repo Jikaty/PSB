@@ -33,7 +33,7 @@ def check(name, cond):
 
 docs = load_knowledge_base(SETTINGS.data_dir)
 chunks = chunk_documents(docs)
-settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", llm_model="m", reasoning_effort="", max_tokens=1024)
+settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", embed_key="k", rerank_key="k", llm_model="m", reasoning_effort="", max_tokens=1024)
 p17 = next(d for d in docs if d.number == "П-17/2024")
 TEXT = "Гарантийный срок — 24 месяца."
 FULL = TEXT + " Источник: Договор поставки № П-17/2024, п. 5.2."

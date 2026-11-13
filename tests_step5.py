@@ -34,7 +34,7 @@ def check(name, cond):
 
 docs = load_knowledge_base(SETTINGS.data_dir)
 chunks = chunk_documents(docs)
-settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", llm_model="m", reasoning_effort="")
+settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", embed_key="k", rerank_key="k", llm_model="m", reasoning_effort="")
 
 
 def make(handler):

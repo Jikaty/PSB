@@ -35,7 +35,7 @@ def check(name, cond):
 
 docs = load_knowledge_base(SETTINGS.data_dir)
 chunks = chunk_documents(docs)
-settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", llm_model="m", reasoning_effort="", max_tokens=1024)
+settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", embed_key="k", rerank_key="k", llm_model="m", reasoning_effort="", max_tokens=1024)
 by_number = {d.number: d for d in docs if not d.is_law}
 p17, pt05, memo, k12 = by_number["П-17/2024"], by_number["ПТ-05/2023"], by_number["ЮО-7"], by_number["К-12"]
 old_rules = next(d for d in docs if "ред. от 10.01.2023" in d.title)

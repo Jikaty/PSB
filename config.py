@@ -36,6 +36,46 @@ def env_float(name: str, default: float, low: float, high: float) -> float:
         return default
 
 
+FLAG_DEFAULTS = {
+    "USE_REASONING_EXTRACT": True,
+    "USE_NO_FORMAT_RETRY": True,
+    "USE_INJECTION_STRIP": True,
+    "USE_TIMELINE": True,
+    "USE_VERIFIER": True,
+    "USE_SELF_CHECK": True,
+    "USE_EXTRA_RULES": False,
+}
+FLAG_ON = ("1", "true", "yes", "on")
+FLAG_OFF = ("0", "false", "no", "off")
+
+
+def parse_flag(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in FLAG_ON:
+        return True
+    if text in FLAG_OFF:
+        return False
+    return default
+
+
+def load_flags() -> dict[str, bool]:
+    try:
+        import flags as generated
+    except Exception:
+        generated = None
+    result = {}
+    for name, default in FLAG_DEFAULTS.items():
+        packed = parse_flag(getattr(generated, name, default), default)
+        result[name] = parse_flag(env(name), packed)
+    return result
+
+
+def flags_text(values: dict[str, bool]) -> str:
+    return " ".join(f"{name}={int(value)}" for name, value in values.items())
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -77,3 +117,4 @@ def load_settings() -> Settings:
 
 
 SETTINGS = load_settings()
+FLAGS = load_flags()

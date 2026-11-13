@@ -39,7 +39,7 @@ def reset(full=math.inf, stop=math.inf, pauses=(0.0, 0.0, 0.0)):
     llm_client.STATS.clear()
 
 
-settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", llm_model="m", reasoning_effort="")
+settings = dataclasses.replace(SETTINGS, base_url="http://mock", llm_key="k", embed_key="k", rerank_key="k", llm_model="m", reasoning_effort="")
 docs = load_knowledge_base(SETTINGS.data_dir)
 chunks = chunk_documents(docs)
 GOOD = json.dumps({"type": "answer", "answer": "Гарантия 24 месяца. Источник: п. 5.1.", "citations": [], "missing": ""}, ensure_ascii=False)

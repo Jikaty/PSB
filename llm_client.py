@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from config import SETTINGS, Settings
+from config import FLAGS, SETTINGS, Settings
 
 RETRY_PAUSES = (1.0, 3.0, 7.0)
 CHAT_TIMEOUT = 60.0
@@ -188,7 +188,7 @@ def chat(
         if finish == "length" and bigger > tokens:
             tokens = bigger
             count("/chat/completions more tokens")
-        elif not content and use_json:
+        elif not content and use_json and FLAGS["USE_NO_FORMAT_RETRY"]:
             use_json = False
             count("/chat/completions blank in json mode")
     if best:

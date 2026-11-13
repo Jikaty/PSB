@@ -13,7 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import llm_client
-from config import SETTINGS, env_float
+from config import FLAGS, SETTINGS, env_float, flags_text
 
 FULL_SECONDS = env_float("TIME_FULL_SECONDS", 15 * 60, 0.0, 19 * 60)
 STOP_SECONDS = env_float("TIME_STOP_SECONDS", 18 * 60, 1.0, 19 * 60)
@@ -100,7 +100,7 @@ def tally(result: dict, stats: Counter) -> None:
     stats["без эмбеддингов"] += bool(flags.get("embeddings_off"))
     stats["JSON не разобран"] += debug.get("json_ok") is False
     check = debug.get("verification") or {}
-    if check.get("level2") not in (None, "not needed"):
+    if check.get("level2") not in (None, "not needed", "off"):
         stats["проверка моделью: " + str(check["level2"])] += 1
     stats["исправлено кодом (названия, пункты)"] += bool(check.get("fixes"))
     stats["замечания проверки"] += bool(check.get("issues"))
@@ -162,6 +162,7 @@ def main() -> int:
     answers = [FALLBACK] * len(questions)
     save(ids, answers)
     log(f"Вопросов: {len(questions)}; потоков: {SETTINGS.max_workers}; запасной submission.csv записан")
+    log("Флаги: " + flags_text(FLAGS))
     try:
         engine = pipeline.get_engine()
         retriever = engine.retriever

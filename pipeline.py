@@ -15,7 +15,7 @@ import retriever as search
 import timeline
 import verifier
 from chunker import Chunk, chunk_documents
-from config import SETTINGS, Settings
+from config import FLAGS, SETTINGS, Settings
 from kb_loader import MONTHS, Document, format_dmy, load_knowledge_base, number_pattern, overlaps_suspicious, visible_text
 
 FALLBACK = "Не удалось сформировать подтверждённый документами ответ по базе знаний."
@@ -252,7 +252,7 @@ def first_reply(engine: Engine, messages: list[dict]) -> str:
     try:
         return llm_client.chat(engine.client, engine.settings, messages)
     except llm_client.EmptyCompletion as exc:
-        if parse_json(exc.reasoning) is None:
+        if not FLAGS["USE_REASONING_EXTRACT"] or parse_json(exc.reasoning) is None:
             raise
         llm_client.count("/chat/completions answer from reasoning")
         return exc.reasoning
@@ -476,26 +476,30 @@ def answer_question(raw_question: str, use_reranker: bool = True, self_check: bo
     try:
         engine = get_engine()
         history, asked = split_dialog(str(raw_question or ""))
-        injected, clean = verifier.split_injection(asked)
+        injected, clean = verifier.split_injection(asked) if FLAGS["USE_INJECTION_STRIP"] else (False, asked)
         question = clean if injected and clean else asked
         earlier = [text for role, text in history if role == "user"]
         retrieval = engine.retriever.search(question, earlier, use_reranker)
         debug.update(flags=retrieval.flags, retrieval=retrieval.debug, entities=retrieval.entities, injection=injected)
-        periods = timeline.find_periods("\n".join([*earlier, question]))
+        use_timeline = FLAGS["USE_TIMELINE"]
+        periods = timeline.find_periods("\n".join([*earlier, question])) if use_timeline else []
         catalog = build_catalog(engine.docs, timeline.catalog_marks(engine.docs, periods)) if periods else engine.catalog
         context = build_context(retrieval, engine.retriever.by_id)
-        status = date_block(engine, retrieval, periods)
+        status = date_block(engine, retrieval, periods) if use_timeline else ""
+        dates = "; ".join(p.label for p in periods)
+        if not use_timeline:
+            dates = ", ".join(date_text(value) for value in retrieval.entities.get("dates", []))
         hints = build_hints(retrieval.flags)
         if injected and not clean:
             hints = "; ".join(part for part in (hints, HINT_INJECTION) if part)
         blocks = prompts.build_blocks(
-            catalog, context, build_history(history), escape(question), "; ".join(p.label for p in periods), hints, status,
+            catalog, context, build_history(history), escape(question), dates, hints, status,
         )
         user = prompts.build_user_prompt(
-            catalog, context, build_history(history), escape(question), "; ".join(p.label for p in periods), hints, status,
+            catalog, context, build_history(history), escape(question), dates, hints, status,
         )
         messages = [
-            {"role": "system", "content": prompts.build_system_prompt(today_text())},
+            {"role": "system", "content": prompts.build_system_prompt(today_text(), FLAGS["USE_EXTRA_RULES"])},
             {"role": "user", "content": user},
         ]
         debug["prompt_chars"] = len(user)
@@ -513,11 +517,14 @@ def answer_question(raw_question: str, use_reranker: bool = True, self_check: bo
             "bound": retrieval.debug.get("bound", []) if retrieval.entities.get("numbers") or retrieval.entities.get("orgs") else [],
             "asked": "?" in asked and not (injected and not clean),
         }
-        answer, kind, check = verify(
-            engine, blocks, name_ids(clean_answer(data.get("answer")), engine), kind, sources, stats.get("dropped", 0), state,
-            self_check and llm_client.BUDGET.full(),
-        )
-        debug["calls"] = debug.get("calls", 1) + (check["level2"] not in ("not needed", "skipped"))
+        if FLAGS["USE_VERIFIER"]:
+            answer, kind, check = verify(
+                engine, blocks, name_ids(clean_answer(data.get("answer")), engine), kind, sources, stats.get("dropped", 0),
+                state, self_check and FLAGS["USE_SELF_CHECK"] and llm_client.BUDGET.full(),
+            )
+        else:
+            answer, check = clean_answer(data.get("answer")), {"issues": [], "fixes": [], "level2": "off", "safe": False}
+        debug["calls"] = debug.get("calls", 1) + (check["level2"] not in ("not needed", "skipped", "off"))
         answer = finalize(answer, [] if check["safe"] else sources, engine)
         if injected and clean and answer:
             answer = (verifier.REFUSAL + " " + answer)[:MAX_ANSWER].strip()
