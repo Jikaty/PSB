@@ -15,7 +15,7 @@ os.chdir(ROOT)
 os.environ["LLM_REASONING_EFFORT"] = ""
 FLAG_NAMES = (
     "USE_REASONING_EXTRACT", "USE_NO_FORMAT_RETRY", "USE_INJECTION_STRIP", "USE_TIMELINE", "USE_VERIFIER",
-    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES", "USE_S1_CHAT",
+    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES", "USE_S1_CHAT", "USE_FULL_ANSWERS",
 )
 for flag_name in FLAG_NAMES:
     os.environ.pop(flag_name, None)
@@ -46,13 +46,13 @@ def check(name, cond):
 
 DEFAULTS = dict(config.FLAG_DEFAULTS)
 check("flag names", tuple(DEFAULTS) == FLAG_NAMES)
-check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True)
+check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True and DEFAULTS["USE_FULL_ANSWERS"] is False)
 check("loaded defaults", FLAGS == DEFAULTS and config.load_flags() == DEFAULTS)
 check("no flags.py in repo", not os.path.exists(os.path.join(ROOT, "flags.py")))
 check("parse on", all(config.parse_flag(v, False) for v in ("1", "true", "True", " YES ", "on", True)))
 check("parse off", not any(config.parse_flag(v, True) for v in ("0", "false", "False", " no ", "OFF", False)))
 check("parse garbage keeps default", config.parse_flag("maybe", True) and not config.parse_flag("", False) and config.parse_flag(None, True))
-check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1"))
+check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1 USE_FULL_ANSWERS=0"))
 
 os.environ["USE_VERIFIER"] = "0"
 os.environ["USE_EXTRA_RULES"] = "1"
@@ -103,6 +103,20 @@ check("base prompt: no programme marks", "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not 
 check("base prompt keeps the rest", "ФОРМАТ ВЫВОДА" in base and '{"type"' in base and "1 января 2026 г." in base and "{today}" not in base)
 check("base prompt keeps step 5 rules", "Сверь предмет вопроса с предметом документа" in base and "7. Законы есть только" in base)
 check("base shorter", len(base) < len(full))
+check("full rules: four pairs", len(prompts.FULL_RULES) == 4)
+check("full rules: base text present once", all(prompts.SYSTEM_PROMPT.count(old) == 1 for old, _ in prompts.FULL_RULES))
+long_text = prompts.build_system_prompt(TODAY, False, True, True)
+check("full answers off by default", prompts.build_system_prompt(TODAY, False, True, False) == full and "1–4 предложения" in full and "40–90 слов" not in full)
+check("full answers on: new rules", "2–5 предложений, 40–90 слов" in long_text and "1–4 предложения" not in long_text and all(new in long_text for _, new in prompts.FULL_RULES) and all(old not in long_text for old, _ in prompts.FULL_RULES))
+check("full answers on: completeness ban removed", "«для полноты»" not in long_text and "Не добавляй сведений, которых нет в документах." in long_text and "договор срок не устанавливает" in long_text)
+check("full answers on: no_info narrowed", "только если в каталоге нет ни одного документа по теме" in long_text and "по памяти не отвечаешь" in long_text and "одной фразой назови" in long_text)
+check("full answers on: calculations allowed", "Простые вычисления и сравнения" in long_text and "Не вычисляй новые суммы" not in long_text)
+check("full answers formats", "{today}" not in long_text and '{"type"' in long_text and "{{" not in long_text)
+check("full answers with step7 off and extra on", all(new in prompts.build_system_prompt(TODAY, True, False, True) for _, new in prompts.FULL_RULES))
+FLAGS["USE_FULL_ANSWERS"] = True
+check("prompt reads full flag", prompts.build_system_prompt(TODAY) == long_text and prompts.build_system_prompt(TODAY, full=False) == full)
+FLAGS["USE_FULL_ANSWERS"] = False
+check("verifier prompt unchanged by full flag", "1–4 предложения" in prompts.build_verifier_system(TODAY))
 
 check("parse_flags empty", make_zip.parse_flags([]) == DEFAULTS)
 parsed = make_zip.parse_flags(["USE_VERIFIER=0,use_extra_rules=1", "USE_TIMELINE=off"])

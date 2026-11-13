@@ -112,6 +112,33 @@ EXTRA_RULES = """- Если в вопросе упомянута статья, �
 - Если в том же документе рядом с найденным пунктом есть условие, которое прямо меняет сумму или срок из ответа, добавь его одним предложением с цитатой. Не больше одного такого условия."""
 EXTRA_ANCHOR = "\n\nФОРМАТ ВЫВОДА"
 
+FULL_RULES = (
+    (
+        "- Русский язык, 1–4 предложения, не более 150 слов; длиннее — только если этого требует обоснование.",
+        """- Русский язык, 2–5 предложений, 40–90 слов: сначала прямой ответ одной фразой («Да», «Нет», «30 дней»),
+  затем практический вывод для юриста (можно или нельзя, что нужно сделать, какой документ оформить), затем
+  условия из того же документа, которые влияют на ответ: исключения, порядок, сроки, связанные суммы.""",
+    ),
+    (
+        "  Не вычисляй новые суммы и даты, если пользователь об этом не просил; если считаешь — покажи исходные числа.",
+        "  Простые вычисления и сравнения по числам из документов допустимы; при этом покажи исходные числа.",
+    ),
+    (
+        "- Не добавляй общих рекомендаций, оценок рисков и сведений «для полноты», которых нет в документах.",
+        """- Не добавляй сведений, которых нет в документах.
+- Если документ не устанавливает то, о чём спрашивают, прямо так и напиши («договор срок не устанавливает») и
+  скажи, где это определяется, если это указано в документе.""",
+    ),
+    (
+        """- no_info: в базе нет документов по теме. Скажи об этом прямо, не отвечай по памяти, посоветуй, к кому обратиться
+  (профильное подразделение или юрист).""",
+        """- no_info: только если в каталоге нет ни одного документа по теме. Тогда скажи, что в базе нет документов по
+  теме, что по памяти не отвечаешь, и к кому обратиться (профильное подразделение или юрист). Если документ по
+  теме есть, но прямого ответа в нём нет, — это не no_info: ответь тем, что в нём есть, и одной фразой назови,
+  чего не хватает.""",
+    ),
+)
+
 FORMAT_REMINDER = (
     "Предыдущий вывод не является корректным JSON. Верни строго один JSON-объект с полями "
     "type, answer, citations, missing — без пояснений, без markdown и без текста вокруг."
@@ -154,20 +181,26 @@ NO_HINTS = "нет"
 NO_CONTEXT = "Подходящих документов и фрагментов не найдено."
 
 
-def system_template(extra_rules: bool, step7: bool) -> str:
+def system_template(extra_rules: bool, step7: bool, full: bool = False) -> str:
     text = SYSTEM_PROMPT
     if not step7:
         for new, base in STEP7_RULES:
             text = text.replace(new, base)
+    if full:
+        for base, new in FULL_RULES:
+            text = text.replace(base, new)
     if extra_rules:
         text = text.replace(EXTRA_ANCHOR, "\n" + EXTRA_RULES + EXTRA_ANCHOR, 1)
     return text
 
 
-def build_system_prompt(today: str, extra_rules: bool | None = None, step7: bool | None = None) -> str:
+def build_system_prompt(
+    today: str, extra_rules: bool | None = None, step7: bool | None = None, full: bool | None = None
+) -> str:
     extra_rules = FLAGS["USE_EXTRA_RULES"] if extra_rules is None else extra_rules
     step7 = FLAGS["USE_STEP7_PROMPT"] if step7 is None else step7
-    return system_template(extra_rules, step7).format(today=today)
+    full = FLAGS["USE_FULL_ANSWERS"] if full is None else full
+    return system_template(extra_rules, step7, full).format(today=today)
 
 
 def build_verifier_system(today: str) -> str:

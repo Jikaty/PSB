@@ -46,6 +46,7 @@ FLAG_DEFAULTS = {
     "USE_STEP7_PROMPT": True,
     "USE_EXTRA_RULES": False,
     "USE_S1_CHAT": True,
+    "USE_FULL_ANSWERS": False,
 }
 FLAG_ON = ("1", "true", "yes", "on")
 FLAG_OFF = ("0", "false", "no", "off")
