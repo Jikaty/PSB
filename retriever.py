@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -26,6 +27,8 @@ BOOST = 1.0
 MIN_KEEP = 6
 FAILURE_LIMIT = 3
 RERANK_OFF_STATUSES = (400, 404)
+RERANK_LOST_LIMIT = 120.0
+INDEX_SECONDS = 180.0
 SCORE_EXACT = 100
 SCORE_INFLECTED = 95
 SCORE_FUZZY = 88
@@ -187,6 +190,7 @@ class Retriever:
         self.chunk_rows = np.array([self.doc_rows[chunk.doc_id] for chunk in chunks], dtype=np.int64)
         self.lock = threading.Lock()
         self.failures = {"embeddings": 0, "rerank": 0}
+        self.rerank_lost = 0.0
         self.reranker_off = False
         self.embeddings_off = not use_embeddings
         self.vectorizer = None
@@ -235,9 +239,10 @@ class Retriever:
     def embed_chunks(self) -> np.ndarray | None:
         texts = [chunk.text[:EMBED_CHARS] for chunk in self.chunks]
         batches = [texts[i:i + EMBED_BATCH] for i in range(0, len(texts), EMBED_BATCH)]
+        until = time.monotonic() + INDEX_SECONDS
         try:
             with ThreadPoolExecutor(max_workers=min(4, self.settings.max_workers)) as pool:
-                parts = list(pool.map(lambda batch: llm_client.embed(self.client, self.settings, batch), batches))
+                parts = list(pool.map(lambda batch: llm_client.embed(self.client, self.settings, batch, until=until), batches))
             matrix = np.asarray([vector for part in parts for vector in part], dtype=np.float32)
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
             if matrix.ndim != 2 or matrix.shape[0] != len(texts) or not np.isfinite(matrix).all() or (norms == 0).any():
@@ -248,15 +253,21 @@ class Retriever:
             self.embeddings_off = True
             return None
 
-    def note_failure(self, kind: str, exc: Exception) -> None:
+    def note_failure(self, kind: str, exc: Exception, seconds: float = 0.0) -> None:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else 0
         unset = not self.settings.base_url
         with self.lock:
             self.failures[kind] += 1
             if kind == "rerank":
-                if (status in RERANK_OFF_STATUSES or unset) and not self.reranker_off:
+                self.rerank_lost += seconds
+                if self.reranker_off:
+                    return
+                if status in RERANK_OFF_STATUSES or unset:
                     self.reranker_off = True
                     print(f"Реранкер отключён: статус {status}; используется порядок слияния", file=sys.stderr)
+                elif self.rerank_lost >= RERANK_LOST_LIMIT:
+                    self.reranker_off = True
+                    print(f"Реранкер отключён: на сбои ушло {self.rerank_lost:.0f} с; используется порядок слияния", file=sys.stderr)
                 return
             permanent = (400 <= status < 500 and status != 429) or unset
             if (permanent or self.failures[kind] >= FAILURE_LIMIT) and not self.embeddings_off:
@@ -398,13 +409,16 @@ class Retriever:
         return order[: self.settings.top_k * 4]
 
     def rerank(self, text: str, order: list[int], enabled: bool) -> tuple[list[int], bool]:
-        if not enabled or self.reranker_off or not order:
+        if not enabled or self.reranker_off or not order or not llm_client.BUDGET.full():
             return order, False
         documents = [self.chunks[i].text[:RERANK_CHARS] for i in order]
+        started = time.monotonic()
         try:
-            ranked = llm_client.rerank(self.client, self.settings, text, documents, len(order))
+            ranked = llm_client.rerank(
+                self.client, self.settings, text, documents, len(order), until=llm_client.BUDGET.full_until
+            )
         except llm_client.CLIENT_ERRORS as exc:
-            self.note_failure("rerank", exc)
+            self.note_failure("rerank", exc, time.monotonic() - started)
             return order, False
         self.note_success("rerank")
         seen = {i for i, _ in ranked}

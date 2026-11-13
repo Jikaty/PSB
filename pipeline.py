@@ -188,10 +188,13 @@ def salvage(text: str) -> str:
         return body.replace('\\"', '"').replace("\\n", " ")
 
 
-def generate(engine: Engine, messages: list[dict]) -> tuple[dict, dict]:
+def generate(engine: Engine, messages: list[dict], extra_calls: bool = True) -> tuple[dict, dict]:
     info = {"calls": 1, "json_ok": True}
     text = llm_client.chat(engine.client, engine.settings, messages)
     data = parse_json(text)
+    if data is None and not extra_calls:
+        info["json_ok"] = False
+        data = {"type": "answer", "answer": salvage(text), "citations": [], "missing": ""}
     if data is None:
         info["calls"] = 2
         retry = messages + [{"role": "assistant", "content": text}, {"role": "user", "content": prompts.FORMAT_REMINDER}]
@@ -335,7 +338,7 @@ def finalize(answer: str, sources: list[dict], engine: Engine) -> str:
     return answer[:MAX_ANSWER].strip()
 
 
-def answer_question(raw_question: str, use_reranker: bool = True) -> dict:
+def answer_question(raw_question: str, use_reranker: bool = True, self_check: bool = True) -> dict:
     started = time.monotonic()
     debug: dict = {}
     try:
@@ -357,8 +360,8 @@ def answer_question(raw_question: str, use_reranker: bool = True) -> dict:
             {"role": "user", "content": user},
         ]
         debug["prompt_chars"] = len(user)
-        data, info = generate(engine, messages)
-        debug.update(info)
+        data, info = generate(engine, messages, self_check and llm_client.BUDGET.full())
+        debug.update(info, self_check=self_check and llm_client.BUDGET.full())
         kind = str(data.get("type", "")).strip().lower()
         kind = kind if kind in TYPES else "answer"
         sources = build_sources(data.get("citations"), engine)

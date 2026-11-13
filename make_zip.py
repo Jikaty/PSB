@@ -17,6 +17,7 @@ FILES = [
     "solution.py",
     "requirements.txt",
 ]
+ALIASES = {"requirements_start.txt": "requirements.txt"}
 
 
 def main() -> int:
@@ -28,6 +29,8 @@ def main() -> int:
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         for name in FILES:
             archive.write(ROOT / name, arcname=name)
+        for alias, name in ALIASES.items():
+            archive.write(ROOT / name, arcname=alias)
     with zipfile.ZipFile(out) as archive:
         for info in archive.infolist():
             print(f"{info.filename}\t{info.file_size}")
