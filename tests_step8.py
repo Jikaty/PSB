@@ -46,13 +46,13 @@ def check(name, cond):
 
 DEFAULTS = dict(config.FLAG_DEFAULTS)
 check("flag names", tuple(DEFAULTS) == FLAG_NAMES)
-check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is False)
+check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True)
 check("loaded defaults", FLAGS == DEFAULTS and config.load_flags() == DEFAULTS)
 check("no flags.py in repo", not os.path.exists(os.path.join(ROOT, "flags.py")))
 check("parse on", all(config.parse_flag(v, False) for v in ("1", "true", "True", " YES ", "on", True)))
 check("parse off", not any(config.parse_flag(v, True) for v in ("0", "false", "False", " no ", "OFF", False)))
 check("parse garbage keeps default", config.parse_flag("maybe", True) and not config.parse_flag("", False) and config.parse_flag(None, True))
-check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=0"))
+check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1"))
 
 os.environ["USE_VERIFIER"] = "0"
 os.environ["USE_EXTRA_RULES"] = "1"
@@ -155,7 +155,7 @@ def run(replies, question_text=QUESTION, self_check=True, **flags):
     llm_client.JSON_MODE_OFF.clear()
     llm_client.TOKENS["floor"] = 0
     saved = dict(FLAGS)
-    FLAGS.update(flags)
+    FLAGS.update({"USE_S1_CHAT": False, **flags})
     try:
         return pipeline.answer_question(question_text, self_check=self_check), seen
     finally:
@@ -293,7 +293,7 @@ def chat_run(replies, **flags):
     llm_client.JSON_MODE_OFF.clear()
     llm_client.TOKENS["floor"] = 0
     saved = dict(FLAGS)
-    FLAGS.update(flags)
+    FLAGS.update({"USE_S1_CHAT": False, **flags})
     try:
         try:
             return llm_client.chat(client, settings, [{"role": "user", "content": "x"}]), seen
@@ -344,12 +344,85 @@ check("s1 salvage: answer field", pipeline.salvage('{"answer": "Срок 30 дн
 check("s1 salvage data: type answer", pipeline.salvage_data('{"type": "no_info", "answer": "нет"') == {"type": "answer", "answer": "нет", "citations": [], "missing": ""})
 FLAGS.clear()
 FLAGS.update(saved_flags)
+FLAGS["USE_S1_CHAT"] = False
 check("new parse and salvage back", pipeline.parse_json(other_key)["answer"] == OK_TEXT and pipeline.salvage('{"type": "no_info"}') == "" and pipeline.salvage_data('{"type": "no_info", "answer": "нет"')["type"] == "no_info")
+FLAGS["USE_S1_CHAT"] = True
+out, seen = chat_run([CUT, FULL], USE_S1_CHAT=DEFAULTS["USE_S1_CHAT"])
+check("default chat is s1", len(seen) == 1 and seen[0]["max_tokens"] == settings.max_tokens and out == CUT[0]["content"])
 cut_json = '{"type": "answer", "answer": "Срок оплаты — 30 календарных дней (п. 4.2)'
 res, seen = run([cut_json, ""], USE_S1_CHAT=True)
 check("s1: cut json salvaged", res["answer"].startswith("Срок оплаты — 30 календарных дней (п. 4.2)") and res["debug"]["json_ok"] is False and len(seen) == 4)
 res, seen = run([cut_json, "не json"], USE_S1_CHAT=True, USE_VERIFIER=False)
 check("s1: second plain text wins", res["answer"] == "не json" and len(seen) == 2)
+
+
+import solution
+
+check("retry settings", solution.RETRY_ATTEMPTS == 2 and solution.RETRY_PAUSE == 2.0)
+solution.RETRY_PAUSE = 0.0
+real_chat, real_log, real_output, real_budget = llm_client.chat, solution.log, solution.OUTPUT, llm_client.BUDGET.full_until
+work_dir = tempfile.mkdtemp()
+solution.OUTPUT = solution.Path(work_dir) / "submission.csv"
+ASKED = [("q1", QUESTION), ("q2", "Какой гарантийный срок по договору П-17/2024?"), ("q3", "Какая неустойка за просрочку поставки по договору П-17/2024?")]
+
+
+def retry_run(fail_first, always_fail=(), full_until=None, sleeps=None):
+    calls, lines = Counter(), []
+
+    def fake_chat(client, settings_, messages, *args, **kwargs):
+        text = messages[1]["content"]
+        key = next(qid for qid, question in ASKED if "<question>\n" + question in text)
+        calls[key] += 1
+        if key in always_fail or (key in fail_first and calls[key] == 1):
+            raise ValueError("empty completion")
+        return main_reply(OK_TEXT)
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404, json={})))
+    retr = search.Retriever(docs, chunks, settings, client, use_embeddings=False)
+    pipeline._engine = pipeline.Engine(settings, client, docs, chunks, retr, pipeline.build_catalog(docs))
+    llm_client.chat, solution.log = fake_chat, lines.append
+    real_sleep = solution.time.sleep
+    if sleeps is not None:
+        solution.time.sleep = sleeps.append
+    if full_until is not None:
+        llm_client.BUDGET.full_until = full_until
+    ids, answers = [qid for qid, _ in ASKED], [solution.FALLBACK] * len(ASKED)
+    try:
+        completed = solution.run(ASKED, ids, answers)
+    finally:
+        llm_client.chat, solution.log, llm_client.BUDGET.full_until = real_chat, real_log, real_budget
+        solution.time.sleep = real_sleep
+    with solution.OUTPUT.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    return completed, answers, calls, lines, rows
+
+
+from collections import Counter
+import csv
+
+completed, answers, calls, lines, rows = retry_run({"q1", "q2", "q3"})
+check("retry: all fixed", completed and answers == [OK_TEXT] * 3 and dict(calls) == {"q1": 2, "q2": 2, "q3": 2})
+check("retry: log before and after", "Вопросов с ошибкой до повтора: 3; после повтора: 0" in lines)
+check("retry: csv has good answers", rows == [["id", "answer"]] + [[qid, OK_TEXT] for qid, _ in ASKED])
+check("retry: counters", "  исправлено повтором: 3" in lines and "  повторных попыток: 3" in lines and "  запасных ответов: 3" not in lines and not any("запасных ответов" in line for line in lines))
+completed, answers, calls, lines, rows = retry_run({"q2"})
+check("retry: only failed question repeated", answers == [OK_TEXT] * 3 and dict(calls) == {"q1": 1, "q2": 2, "q3": 1} and "Вопросов с ошибкой до повтора: 1; после повтора: 0" in lines)
+completed, answers, calls, lines, rows = retry_run({"q1"}, always_fail={"q3"})
+check("retry: two attempts at most", calls["q3"] == 3 and calls["q1"] == 2 and calls["q2"] == 1)
+check("retry: fallback kept", completed and answers == [OK_TEXT, OK_TEXT, solution.FALLBACK] and rows[3] == ["q3", solution.FALLBACK] and rows[1] == ["q1", OK_TEXT])
+check("retry: log partial", "Вопросов с ошибкой до повтора: 2; после повтора: 1" in lines and "  запасных ответов: 1" in lines)
+completed, answers, calls, lines, rows = retry_run(set())
+check("retry: nothing to do", dict(calls) == {"q1": 1, "q2": 1, "q3": 1} and "Вопросов с ошибкой до повтора: 0; после повтора: 0" in lines)
+completed, answers, calls, lines, rows = retry_run({"q1", "q2", "q3"}, full_until=solution.time.monotonic() - 1)
+check("retry: no time left -> no retries", completed and answers == [solution.FALLBACK] * 3 and dict(calls) == {"q1": 1, "q2": 1, "q3": 1})
+check("retry: no time left log and csv", "Вопросов с ошибкой до повтора: 3; после повтора: 3" in lines and len(rows) == 4 and all(row[1] == solution.FALLBACK for row in rows[1:]))
+solution.RETRY_PAUSE = 2.0
+sleeps = []
+completed, answers, calls, lines, rows = retry_run({"q1"}, always_fail={"q3"}, sleeps=sleeps)
+check("retry: pause 2 s before each attempt", sleeps == [2.0, 2.0, 2.0] and answers[0] == OK_TEXT)
+completed, answers, calls, lines, rows = retry_run({"q1"}, full_until=solution.time.monotonic() + 1.5, sleeps=sleeps)
+check("retry: less than pause left -> skipped", calls["q1"] == 1 and answers[0] == solution.FALLBACK)
+solution.OUTPUT = real_output
 
 
 def build(*args):

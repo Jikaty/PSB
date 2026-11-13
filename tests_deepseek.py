@@ -11,7 +11,10 @@ os.chdir(ROOT)
 os.environ["LLM_REASONING_EFFORT"] = ""
 os.environ["MAX_TOKENS"] = "1024"
 
+import config
 import llm_client
+
+config.FLAGS["USE_S1_CHAT"] = False
 import pipeline
 import retriever as search
 from chunker import chunk_documents

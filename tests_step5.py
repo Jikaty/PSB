@@ -11,7 +11,10 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 os.environ["LLM_REASONING_EFFORT"] = ""
 
+import config
 import llm_client
+
+config.FLAGS["USE_S1_CHAT"] = False
 import pipeline
 import prompts
 import retriever as search

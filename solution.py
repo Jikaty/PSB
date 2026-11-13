@@ -26,6 +26,8 @@ FALLBACK = pipeline.FALLBACK
 OUTPUT = Path("submission.csv")
 SAVE_EVERY = 10
 WAIT_STEP = 5.0
+RETRY_ATTEMPTS = 2
+RETRY_PAUSE = 2.0
 SPACES = re.compile(r"\s+")
 
 
@@ -109,6 +111,33 @@ def tally(result: dict, stats: Counter) -> None:
         stats["ошибка " + str(debug["error"])] += 1
 
 
+def is_bad(result: dict) -> bool:
+    return result.get("status") == "error" or clean(result.get("answer")) == FALLBACK
+
+
+def retry(questions: list[tuple[str, str]], ids: list[str], answers: list[str], bad: list[int], stats: Counter) -> None:
+    left = sorted(bad)
+    for _ in range(RETRY_ATTEMPTS):
+        still: list[int] = []
+        for position, index in enumerate(left):
+            if llm_client.BUDGET.full_until - time.monotonic() <= RETRY_PAUSE:
+                still.extend(left[position:])
+                break
+            time.sleep(RETRY_PAUSE)
+            result = work(questions[index][1])
+            stats["повторных попыток"] += 1
+            if is_bad(result):
+                still.append(index)
+                continue
+            answers[index] = clean(result.get("answer"))
+            stats["исправлено повтором"] += 1
+            save(ids, answers)
+        left = still
+        if not left:
+            break
+    log(f"Вопросов с ошибкой до повтора: {len(bad)}; после повтора: {len(left)}")
+
+
 def report(stats: Counter, answers: list[str]) -> None:
     stats["запасных ответов"] = sum(answer == FALLBACK for answer in answers)
     for name, value in sorted(stats.items()):
@@ -124,6 +153,7 @@ def run(questions: list[tuple[str, str]], ids: list[str], answers: list[str]) ->
     futures: dict[Future, int] = {pool.submit(work, question): i for i, (_, question) in enumerate(questions)}
     pending = set(futures)
     done_count = 0
+    bad: list[int] = []
     while pending:
         left = llm_client.BUDGET.stop_at - time.monotonic()
         if left <= 0:
@@ -133,6 +163,8 @@ def run(questions: list[tuple[str, str]], ids: list[str], answers: list[str]) ->
             result = future.result()
             answers[futures[future]] = clean(result.get("answer"))
             tally(result, stats)
+            if is_bad(result):
+                bad.append(futures[future])
             done_count += 1
             if done_count % SAVE_EVERY == 0:
                 save(ids, answers)
@@ -142,6 +174,8 @@ def run(questions: list[tuple[str, str]], ids: list[str], answers: list[str]) ->
         stats["не дождались (лимит времени)"] = len(pending)
         log(f"Лимит времени: не дождались {len(pending)} ответов, у них запасной ответ")
     save(ids, answers)
+    if not pending:
+        retry(questions, ids, answers, bad, stats)
     log(f"Готово {done_count}/{len(questions)}; деградации и счётчики:")
     report(stats, answers)
     return not pending
