@@ -99,6 +99,12 @@ def tally(result: dict, stats: Counter) -> None:
     stats["без реранкера"] += bool(flags.get("reranker_off"))
     stats["без эмбеддингов"] += bool(flags.get("embeddings_off"))
     stats["JSON не разобран"] += debug.get("json_ok") is False
+    check = debug.get("verification") or {}
+    if check.get("level2") not in (None, "not needed"):
+        stats["проверка моделью: " + str(check["level2"])] += 1
+    stats["исправлено кодом (названия, пункты)"] += bool(check.get("fixes"))
+    stats["замечания проверки"] += bool(check.get("issues"))
+    stats["инъекция в вопросе"] += bool(debug.get("injection"))
     if debug.get("error"):
         stats["ошибка " + str(debug["error"])] += 1
 

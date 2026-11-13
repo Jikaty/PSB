@@ -13,6 +13,7 @@ FILES = [
     "retriever.py",
     "prompts.py",
     "verifier.py",
+    "timeline.py",
     "pipeline.py",
     "solution.py",
     "requirements.txt",

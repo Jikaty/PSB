@@ -164,7 +164,7 @@ def variant(**fields):
 res, seen = run(lambda body, n: reply(variant(Type="answer", Answer=TEXT, Citations=CITES)))
 check("capitalized keys", res["answer"] == FULL and res["status"] == "answer" and len(seen) == 1)
 res, seen = run(lambda body, n: reply(variant(type="no_info", ответ="В базе знаний нет такого документа.")))
-check("russian key", res["answer"] == "В базе знаний нет такого документа." and res["status"] == "no_info" and len(seen) == 1)
+check("russian key", res["answer"] == "В базе знаний нет такого документа." and res["status"] == "no_info" and len(seen) == 2 and res["debug"]["verification"]["level2"] == "error")
 for name in ("final_answer", "response", "text", "output", "result"):
     res, seen = run(lambda body, n, name=name: reply(variant(**{"type": "answer", name: TEXT, "citations": CITES})))
     check("alias " + name, res["answer"] == FULL and len(seen) == 1)

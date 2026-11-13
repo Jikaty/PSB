@@ -156,7 +156,7 @@ src = pipeline.build_sources([
 check("sources count", len(src) == 3)
 check("sources locator fallback", src[0]["start"] >= 0 and "6.1" in p17.text[src[0]["start"]:src[0]["end"]][:8])
 check("sources resolve by number", src[1]["doc_id"] == p17.doc_id and p17.text[src[1]["start"]:].startswith("4.2"))
-check("sources keys", set(src[0]) == {"doc_id", "title", "locator", "quote", "start", "end"})
+check("sources keys", set(src[0]) == {"doc_id", "title", "locator", "quote", "start", "end", "quote_found"})
 check("sources garbage", pipeline.build_sources("x", eng) == [] and pipeline.build_sources(None, eng) == [])
 bad_span = memo.text[memo.suspicious[0][0]:memo.suspicious[0][1]]
 check("suspicious quote dropped", pipeline.build_sources([{"doc_id": memo.doc_id, "locator": "", "quote": bad_span[:120]}], eng) == [])
@@ -246,7 +246,7 @@ check("question is last user turn", "<question>\nА приёмка?" in user)
 check("dates none", "ДАТЫ В ВОПРОСЕ: не указаны" in user)
 res, seen = run(lambda body, n: reply(good), "Договор на 12 млн рублей заключали в августе 2024 года. Нужно ли одобрение?")
 user = [s for s in seen if s[0] == "/chat/completions"][0][1]["messages"][1]["content"]
-check("dates line", "ДАТЫ В ВОПРОСЕ: 08.2024" in user)
+check("dates line", "ДАТЫ В ВОПРОСЕ: август 2024 г." in user and "(ред. от 10.01.2023)" in user and "на дату «август 2024 г.»: ДЕЙСТВОВАЛ (с 10.01.2023 по 28.02.2025)" in user and "на дату «август 2024 г.»: ЕЩЁ НЕ ДЕЙСТВОВАЛ (действует с 01.03.2025)" in user)
 res, seen = run(lambda body, n: reply(good), "Подскажите гарантию по договору с «Альфой».")
 user = [s for s in seen if s[0] == "/chat/completions"][0][1]["messages"][1]["content"]
 check("ambiguous hint", pipeline.HINT_AMBIGUOUS in user and '<doc id="d02"' in user and '<doc id="d03"' in user)

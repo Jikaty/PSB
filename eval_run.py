@@ -322,7 +322,7 @@ def print_statuses(rows: list[dict]) -> None:
     fallback = [r for r in rows if r["answer"] == FALLBACK]
     unparsed = [r for r in rows if r["json_ok"] == 0]
     second = [r for r in rows if r["calls"] == 2]
-    print(f"запасной ответ: {len(fallback)}/{total}; JSON не разобран (текст как есть): {len(unparsed)}/{total}; повторный вызов из-за формата: {len(second)}/{total}")
+    print(f"запасной ответ: {len(fallback)}/{total}; JSON не разобран (текст как есть): {len(unparsed)}/{total}; дополнительный вызов модели (формат или проверка): {len(second)}/{total}")
     refused = [r for r in rows if r["status"] in REFUSAL_STATUSES]
     wrong = [r for r in refused if r["category"] not in REFUSAL_CATEGORIES]
     expected = sum(1 for r in rows if r["category"] in REFUSAL_CATEGORIES)
