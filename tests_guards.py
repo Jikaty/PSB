@@ -35,7 +35,7 @@ def check(name, cond):
         print("FAIL", name)
 
 
-check("flag default off", config.FLAG_DEFAULTS["USE_FACT_GUARDS"] is False and FLAGS["USE_FACT_GUARDS"] is False)
+check("flag default on", config.FLAG_DEFAULTS["USE_FACT_GUARDS"] is True and FLAGS["USE_FACT_GUARDS"] is True)
 
 check("amount mln", timeline.find_amounts(["Договор на 12 млн рублей заключали в августе 2024 года."]) == [12_000_000.0])
 check("amount decimal", timeline.find_amounts(["договор П-17/2024 с ценой 8,4 млн рублей"]) == [8_400_000.0])
@@ -157,7 +157,7 @@ check("on: answer kept", res["status"] == "answer" and res["answer"].startswith(
 res, seen = run([reply(ANSWER5, CITES5)], Q5, USE_FACT_GUARDS=False)
 check("off: no comparison", pipeline.HINT_AMOUNTS not in user_prompt(seen) and "вывод: требуется" not in user_prompt(seen))
 check("off: same answer", res["answer"].startswith("Да, требовалось"))
-check("flags restored", FLAGS["USE_FACT_GUARDS"] is False)
+check("flags restored", FLAGS["USE_FACT_GUARDS"] is True)
 check("hints: joined with other hints", pipeline.build_hints({"ambiguous": True}, ["a"]) == pipeline.HINT_AMBIGUOUS + ";\n" + pipeline.HINT_AMOUNTS + ":\n- a")
 check("hints: none", pipeline.build_hints({}, []) == "" and pipeline.build_hints({"nothing_found": True}) == pipeline.HINT_NOTHING)
 

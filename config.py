@@ -47,7 +47,7 @@ FLAG_DEFAULTS = {
     "USE_EXTRA_RULES": False,
     "USE_S1_CHAT": True,
     "USE_FULL_ANSWERS": False,
-    "USE_FACT_GUARDS": False,
+    "USE_FACT_GUARDS": True,
 }
 FLAG_ON = ("1", "true", "yes", "on")
 FLAG_OFF = ("0", "false", "no", "off")

@@ -318,4 +318,15 @@ check("main call down -> fallback", res["status"] == "error" and res["answer"] =
 res, seen = run([main_reply(OK_TEXT)], "")
 check("empty question no crash", res["status"] in pipeline.TYPES + ("error",))
 
+empty_facts = verifier.collect_facts("")
+for raw, expected in (
+    ("Срок оплаты — 30 дней (п. 9.9.9) .", "Срок оплаты — 30 дней."),
+    ("Срок оплаты 30 дней , затем акт ; итог : оплата .", "Срок оплаты 30 дней, затем акт; итог: оплата."),
+    ("Оплата по п. 4.2 договора П-17/2024 , в течение 30 дней .", "Оплата по п. 4.2 договора П-17/2024, в течение 30 дней."),
+):
+    report = verifier.Report(answer=raw)
+    out = verifier.strip_points(report, raw, [p17], chunks, empty_facts, empty_facts)
+    check("strip_points no control chars: " + raw, not any(ord(char) < 32 for char in out) and not any(ord(char) < 32 for char in report.answer))
+    check("strip_points punctuation kept: " + raw, out == expected and report.answer == expected)
+
 print(f"passed {passed}, failed {failed}")

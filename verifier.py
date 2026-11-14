@@ -288,7 +288,7 @@ def strip_points(report: Report, answer: str, context_docs: list[Document], chun
         report.fixes.append(f"убрана ссылка на несуществующий п. {point}")
     answer = re.sub(r"\s*\(\s*[,;]?\s*\)", "", answer)
     answer = re.sub(r"\(\s*[,;]\s*", "(", answer)
-    answer = re.sub(r"\s+([.,;])", r"", answer)
+    answer = re.sub(r"\s+([.,;:])", r"\1", answer)
     report.answer = answer
     return answer
 

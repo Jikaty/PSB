@@ -46,13 +46,13 @@ def check(name, cond):
 
 DEFAULTS = dict(config.FLAG_DEFAULTS)
 check("flag names", tuple(DEFAULTS) == FLAG_NAMES)
-check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True and DEFAULTS["USE_FULL_ANSWERS"] is False and DEFAULTS["USE_FACT_GUARDS"] is False)
+check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True and DEFAULTS["USE_FULL_ANSWERS"] is False and DEFAULTS["USE_FACT_GUARDS"] is True)
 check("loaded defaults", FLAGS == DEFAULTS and config.load_flags() == DEFAULTS)
 check("no flags.py in repo", not os.path.exists(os.path.join(ROOT, "flags.py")))
 check("parse on", all(config.parse_flag(v, False) for v in ("1", "true", "True", " YES ", "on", True)))
 check("parse off", not any(config.parse_flag(v, True) for v in ("0", "false", "False", " no ", "OFF", False)))
 check("parse garbage keeps default", config.parse_flag("maybe", True) and not config.parse_flag("", False) and config.parse_flag(None, True))
-check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1 USE_FULL_ANSWERS=0 USE_FACT_GUARDS=0"))
+check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1 USE_FULL_ANSWERS=0 USE_FACT_GUARDS=1"))
 
 os.environ["USE_VERIFIER"] = "0"
 os.environ["USE_EXTRA_RULES"] = "1"
@@ -247,7 +247,7 @@ dated = "Договор на 12 млн рублей заключали в авг
 dated_reply = main_reply("Да, требовалось: порог — свыше 10 000 000 рублей (Регламент согласования договоров ООО «Меридиан» (ред. от 10.01.2023), п. 2.4).", cites=[])
 res, seen = run([dated_reply], dated)
 check("timeline on: marks", "на дату «август 2024 г.»: ДЕЙСТВОВАЛ" in user(seen) and "ДАТЫ В ВОПРОСЕ: август 2024 г." in user(seen))
-res, seen = run([dated_reply], dated, USE_TIMELINE=False)
+res, seen = run([dated_reply], dated, USE_TIMELINE=False, USE_FACT_GUARDS=False)
 check("timeline off: no marks", "на дату «" not in user(seen) and "СТАТУС ДОКУМЕНТОВ НА ДАТЫ" not in user(seen) and "ЕЩЁ НЕ" not in user(seen))
 check("timeline off: catalog as built at start", ("КАТАЛОГ ДОКУМЕНТОВ (все документы базы знаний; других документов в базе нет)\n" + pipeline._engine.catalog + "\n\n") in user(seen))
 check("timeline off: answer passes", res["status"] == "answer" and len(seen) == 1)
@@ -292,7 +292,7 @@ res, seen = run(
 check("all off: no crash, fallback", res["status"] == "error" and len(seen) == 3)
 res, seen = run(
     [main_reply(BAD_TEXT)], dated, USE_REASONING_EXTRACT=False, USE_NO_FORMAT_RETRY=False, USE_INJECTION_STRIP=False,
-    USE_TIMELINE=False, USE_VERIFIER=False, USE_SELF_CHECK=False, USE_STEP7_PROMPT=False,
+    USE_TIMELINE=False, USE_VERIFIER=False, USE_SELF_CHECK=False, USE_STEP7_PROMPT=False, USE_FACT_GUARDS=False,
 )
 check("all off: raw answer", res["answer"] == BAD_TEXT and len(seen) == 1 and "на дату «" not in user(seen) and "ЕЩЁ НЕ ДЕЙСТВОВАЛ" not in system(seen))
 res, seen = run([main_reply(OK_TEXT), verdict("ok")], inj, **{name: True for name in FLAG_NAMES})
