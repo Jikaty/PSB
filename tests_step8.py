@@ -15,7 +15,7 @@ os.chdir(ROOT)
 os.environ["LLM_REASONING_EFFORT"] = ""
 FLAG_NAMES = (
     "USE_REASONING_EXTRACT", "USE_NO_FORMAT_RETRY", "USE_INJECTION_STRIP", "USE_TIMELINE", "USE_VERIFIER",
-    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES", "USE_S1_CHAT", "USE_FULL_ANSWERS",
+    "USE_SELF_CHECK", "USE_STEP7_PROMPT", "USE_EXTRA_RULES", "USE_S1_CHAT", "USE_FULL_ANSWERS", "USE_FACT_GUARDS",
 )
 for flag_name in FLAG_NAMES:
     os.environ.pop(flag_name, None)
@@ -46,13 +46,13 @@ def check(name, cond):
 
 DEFAULTS = dict(config.FLAG_DEFAULTS)
 check("flag names", tuple(DEFAULTS) == FLAG_NAMES)
-check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True and DEFAULTS["USE_FULL_ANSWERS"] is False)
+check("defaults", all(DEFAULTS[name] for name in FLAG_NAMES[:7]) and DEFAULTS["USE_EXTRA_RULES"] is False and DEFAULTS["USE_S1_CHAT"] is True and DEFAULTS["USE_FULL_ANSWERS"] is False and DEFAULTS["USE_FACT_GUARDS"] is False)
 check("loaded defaults", FLAGS == DEFAULTS and config.load_flags() == DEFAULTS)
 check("no flags.py in repo", not os.path.exists(os.path.join(ROOT, "flags.py")))
 check("parse on", all(config.parse_flag(v, False) for v in ("1", "true", "True", " YES ", "on", True)))
 check("parse off", not any(config.parse_flag(v, True) for v in ("0", "false", "False", " no ", "OFF", False)))
 check("parse garbage keeps default", config.parse_flag("maybe", True) and not config.parse_flag("", False) and config.parse_flag(None, True))
-check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1 USE_FULL_ANSWERS=0"))
+check("flags text", config.flags_text(DEFAULTS).startswith("USE_REASONING_EXTRACT=1 ") and config.flags_text(DEFAULTS).endswith("USE_EXTRA_RULES=0 USE_S1_CHAT=1 USE_FULL_ANSWERS=0 USE_FACT_GUARDS=0"))
 
 os.environ["USE_VERIFIER"] = "0"
 os.environ["USE_EXTRA_RULES"] = "1"

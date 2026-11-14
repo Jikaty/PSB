@@ -195,3 +195,130 @@ def contract_lines(bound: list[Document], docs: list[Document]) -> list[str]:
             states = "; ".join(f"{other.title} — {doc_status(other, period)}" for other in others)
             lines.append(f"{doc.title} заключён {dmy(signed)}; на эту дату: {states}")
     return lines
+
+
+MAX_COMPARISONS = 8
+REGULATION = "регламент"
+AMOUNT = re.compile(
+    r"(?<![\w.,/-])(\d{1,3}(?:[   ]\d{3})+|\d+)(?:[.,](\d+))?\s*"
+    r"(млрд\w*|миллиард\w*|млн\w*|миллион\w*|тыс\w*)?\.?\s*(руб\w*|₽|р\.)?",
+    re.I,
+)
+LIMIT_WORDS = re.compile(r"(?:свыше|более|выше|менее|ниже|превыша\w*|порог\w*|лимит\w*|от|до)\s*$", re.I)
+THRESHOLD = re.compile(
+    r"(не\s+более|не\s+менее|не\s+превышающ\w*|не\s+превыша\w*|превышающ\w*|свыше|более|менее|от|до)\s+"
+    r"(\d{1,3}(?:[   ]\d{3})+|\d+)(?:[.,](\d+))?\s*(?:\([^)]*\)\s*)?"
+    r"(млрд\w*|миллиард\w*|млн\w*|миллион\w*|тыс\w*)?\.?\s*(?:\([^)]*\)\s*)?руб",
+    re.I,
+)
+POINT_START = re.compile(r"^\s*(\d+(?:\.\d+)+)\.?\s+")
+SCALE_STEMS = (("млрд", 1e9), ("миллиард", 1e9), ("млн", 1e6), ("миллион", 1e6), ("тыс", 1e3))
+
+
+@dataclass(frozen=True)
+class Threshold:
+    point: str
+    op: str
+    word: str
+    value: float
+    text: str
+
+
+def scale_value(word: str | None) -> float:
+    low = (word or "").lower()
+    return next((value for stem, value in SCALE_STEMS if low.startswith(stem)), 1.0)
+
+
+def number_value(whole: str, fraction: str | None, scale: str | None) -> float:
+    digits = re.sub(r"\D", "", whole)
+    value = float(digits + "." + fraction) if fraction else float(digits)
+    return round(value * scale_value(scale), 2)
+
+
+def money(value: float) -> str:
+    whole = f"{int(value):,}".replace(",", " ")
+    rest = round(value - int(value), 2)
+    return (whole + f"{rest:.2f}"[1:].replace(".", ",") if rest else whole) + " руб."
+
+
+def find_amounts(texts: list[str]) -> list[float]:
+    amounts: list[float] = []
+    for text in texts:
+        rest = DOC_NUMBER.sub(lambda m: " " * len(m.group()), text)
+        rest = re.sub(DATE_ANY, lambda m: " " * len(m.group()), rest, flags=re.I)
+        for match in AMOUNT.finditer(rest):
+            if not (match.group(3) or match.group(4)) or LIMIT_WORDS.search(rest[:match.start()]):
+                continue
+            value = number_value(match.group(1), match.group(2), match.group(3))
+            if value >= 1 and value not in amounts:
+                amounts.append(value)
+    return amounts
+
+
+def operator(word: str) -> str:
+    low = " ".join(word.lower().split())
+    if low in ("не более", "до") or low.startswith("не превыша"):
+        return "≤"
+    if low in ("не менее", "от"):
+        return "≥"
+    return "<" if low == "менее" else ">"
+
+
+def holds(amount: float, op: str, limit: float) -> bool:
+    return {">": amount > limit, "≥": amount >= limit, "<": amount < limit, "≤": amount <= limit}[op]
+
+
+def find_thresholds(text: str) -> list[Threshold]:
+    result: list[Threshold] = []
+    for line in text.split("\n"):
+        start = POINT_START.match(line)
+        if not start or VOID_BANNER.search(line):
+            continue
+        sentence = " ".join(line[start.end():].split())
+        for match in THRESHOLD.finditer(sentence):
+            value = number_value(match.group(2), match.group(3), match.group(4))
+            result.append(Threshold(start.group(1), operator(match.group(1)), " ".join(match.group(1).lower().split()), value, sentence[:300]))
+    return result
+
+
+def regulations(docs: list[Document]) -> list[Document]:
+    return [doc for doc in docs if not doc.is_law and doc.doc_type.lower().startswith(REGULATION)]
+
+
+def amount_periods(periods: list[Period], bound: list[Document], today: date) -> list[Period]:
+    if periods:
+        return periods
+    dated = []
+    for doc in bound:
+        signed = parse_iso(doc.date)
+        if signed and not doc.is_law and not doc.doc_type.lower().startswith(REGULATION):
+            dated.append(Period(signed, signed, f"{dmy(signed)} (дата заключения: {doc.title})"))
+    return dated or [Period(today, today, f"{dmy(today)} (сегодня)")]
+
+
+def threshold_lines(
+    texts: list[str], docs: list[Document], visible: dict[str, str], periods: list[Period], bound: list[Document], today: date,
+) -> list[str]:
+    amounts = find_amounts(texts)
+    editions = regulations(docs)
+    if not amounts or not editions:
+        return []
+    lines: list[str] = []
+    for period in amount_periods(periods, bound, today):
+        for doc in editions:
+            state = doc_status(doc, period)
+            if not state.startswith(IN_FORCE):
+                continue
+            part = ", действовала только часть периода" if state.startswith(PARTLY) else ""
+            for limit in find_thresholds(visible.get(doc.doc_id, doc.text)):
+                for amount in amounts:
+                    sign = ">" if amount > limit.value else "=" if amount == limit.value else "<"
+                    verdict = "требуется" if holds(amount, limit.op, limit.value) else "не требуется"
+                    line = (
+                        f"сумма {money(amount)} {sign} порог {money(limit.value)} (условие пункта: «{limit.word} {money(limit.value)}»); "
+                        f"п. {limit.point}, {doc.title} — редакция, применимая на дату «{period.label}»{part}; "
+                        f"текст пункта: «{limit.text}»; вывод: {verdict}"
+                    )
+                    if line not in lines:
+                        lines.append(line)
+    return lines[:MAX_COMPARISONS]

@@ -42,6 +42,14 @@ ANY_POINT = re.compile(r",?\s*(?<!\w)(?:п\.|пункт\w*)\s*(\d+(?:\.\d+)*)(?!
 KIND_WORDS = "договор|регламент|письм|записк|соглашени|приказ"
 LONG_WORD =re.compile(r"[а-яёa-z]{3,}", re.I)
 REFUSAL = "Менять правила работы и раскрывать внутренние инструкции я не буду."
+LAW_TAIL = (
+    r"(?:\s+(?:[А-ЯЁ][А-ЯЁа-яё]*\s+)?(?:кодекс\w*|закон\w*)(?:\s+(?:Российской\s+Федерации|РФ|об?\s+[^,.;()]{3,60}?))?"
+    r"|\s+[А-ЯЁ]{2,5}(?:\s+РФ)?(?![а-яё])|\s+(?:Федерального\s+закона\s+)?(?:№\s*)?\d+-ФЗ)?"
+)
+ARTICLE_LEAD = r"(?:(?:в\s+соответствии\s+со?|согласно|на\s+основании|по)\s+)?(?:(?:ч|п)\.\s*\d+\s+)?"
+ARTICLE_PARTS = r"(?:\s*,\s*ч\.\s*\d+(?![\d.]*\d))*"
+SENTENCE_END = re.compile(r"(?<=[.!?…])\s+(?=[А-ЯЁA-Z«\"(])")
+ARTICLE_REST = r"(?![\d.]*\d)(?:\s*,?\s*(?:ч|п)\.\s*\d+)*"
 SAFE_PREFIX = "Полностью подтвердить ответ документами не удалось. В документах указано: "
 
 UNITS = {
@@ -285,6 +293,70 @@ def strip_points(report: Report, answer: str, context_docs: list[Document], chun
     return answer
 
 
+def article_numbers(text: str) -> list[str]:
+    return [match.group(1) for match in ARTICLE.finditer(mask(DOC_NUMBER, fold(text)))]
+
+
+def unknown_articles(answer: str, docs: list[Document], context: Facts, question: Facts) -> list[str]:
+    articles = {doc.article for doc in docs if doc.is_law and doc.article}
+    result = []
+    for article in article_numbers(answer):
+        named = re.compile(r"(?:ст\.|стать\w*)\s*" + re.escape(article) + r"(?![\d.]*\d)", re.I)
+        if article not in articles and not named.search(context.low) and not named.search(question.low) and article not in result:
+            result.append(article)
+    return result
+
+
+def has_support(text: str, unknown: list[str]) -> bool:
+    rest = mask(DOC_NUMBER, fold(text))
+    if any(number not in unknown for number in article_numbers(text)):
+        return True
+    rest = mask(ARTICLE, rest)
+    return bool(POINT.search(rest) or re.search(r"(?<!\w)п\.\s*\d|пункт\w*\s+\d|источник", rest) or DOC_NUMBER.search(text))
+
+
+def mention(article: str, lead: bool = True) -> re.Pattern:
+    return re.compile((ARTICLE_LEAD if lead else "") + r"(?:ст\.|стать\w*)\s*" + re.escape(article) + ARTICLE_REST + LAW_TAIL + ARTICLE_PARTS, re.I)
+
+
+def tidy(text: str) -> str:
+    text = re.sub(r"\(\s*[,;]?\s*\)", "", text)
+    text = re.sub(r"\(\s*[,;]?\s*", "(", text)
+    text = re.sub(r"\s*[,;]\s*\)", ")", text)
+    text = re.sub(r"\s+([.,;:)])", r"\1", text)
+    text = re.sub(r",\s*([.;])", r"\1", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
+def cut_mentions(sentence: str, found: list[str]) -> str:
+    for article in found:
+        core, bare = mention(article).pattern, mention(article, False).pattern
+        for pattern in (r"(?:\s*,?\s+(?:и|или|а\s+также)\s+|\s*,\s*)" + core, bare + r"(?:\s*,\s*|\s+(?:и|или)\s+)", core):
+            changed = re.sub(pattern, " ", sentence, count=1, flags=re.I)
+            if changed != sentence:
+                sentence = changed
+                break
+    sentence = tidy(sentence)
+    return sentence[:1].upper() + sentence[1:]
+
+
+def strip_articles(report: Report, answer: str, unknown: list[str]) -> str:
+    kept = []
+    sentences = SENTENCE_END.split(answer.strip())
+    for sentence in sentences:
+        found = [article for article in unknown if mention(article).search(sentence)]
+        if not found:
+            kept.append(sentence)
+            continue
+        names = ", ".join("ст. " + article for article in found)
+        if not has_support(sentence, unknown) and len(sentences) > 1:
+            report.fixes.append(f"удалено предложение со ссылкой на {names} (статьи нет в базе)")
+            continue
+        report.fixes.append(f"убрана ссылка на {names} (статьи нет в базе)")
+        kept.append(cut_mentions(sentence, found))
+    return " ".join(part for part in kept if part).strip()
+
+
 def check_answer(
     answer: str,
     kind: str,
@@ -297,6 +369,7 @@ def check_answer(
     chunks: list[Chunk],
     bound: list[str],
     asked: bool = False,
+    guards: bool = False,
 ) -> Report:
     by_id = {doc.doc_id: doc for doc in docs}
     answer, fixes = fix_locators(answer, sources, by_id, chunks)
@@ -315,6 +388,10 @@ def check_answer(
             report.issues.append({"code": "unknown_document", "detail": number})
     answer = fix_doc_kinds(report, docs)
     answer = strip_points(report, answer, context_docs, chunks, context, question)
+    unknown = unknown_articles(answer, docs, context, question) if guards else []
+    if unknown:
+        answer = strip_articles(report, answer, unknown) or answer
+        report.answer = answer
     low = fold(answer)
     rest = mask(DOC_NUMBER, low)
     articles = {doc.article for doc in docs if doc.is_law and doc.article}
