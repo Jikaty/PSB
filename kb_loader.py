@@ -472,10 +472,28 @@ def link_documents(docs: list[Document]) -> None:
         doc.relates_to = sorted(links[doc.doc_id])
 
 
-def load_knowledge_base(data_dir: Path) -> list[Document]:
-    archive = find_archive(data_dir)
+def read_directory(root: Path) -> list[tuple[str, str]]:
+    result = []
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        base = path.name
+        suffix = path.suffix.lower()
+        if "__MACOSX" in path.parts or base.startswith((".", "~$")) or suffix not in READABLE_SUFFIXES:
+            continue
+        try:
+            raw = path.read_bytes()
+            text = read_docx(raw) if suffix == ".docx" else decode_bytes(raw)
+        except (zipfile.BadZipFile, KeyError, ElementTree.ParseError, OSError, RuntimeError) as exc:
+            print(f"Предупреждение: файл {base} не прочитан ({type(exc).__name__})", file=sys.stderr)
+            continue
+        text = normalize_text(text)
+        if text.strip():
+            result.append((base, text))
+    return sorted(result, key=lambda item: item[0])
+
+
+def build_documents(files: list[tuple[str, str]]) -> list[Document]:
     docs = []
-    for file_name, text in read_documents(archive):
+    for file_name, text in files:
         try:
             docs.append(build_card(file_name, text))
         except Exception as exc:
@@ -484,6 +502,20 @@ def load_knowledge_base(data_dir: Path) -> list[Document]:
         doc.doc_id = f"d{index:02d}"
     link_documents(docs)
     return docs
+
+
+def load_knowledge_base(data_dir: Path) -> list[Document]:
+    return build_documents(read_documents(find_archive(data_dir)))
+
+
+def load_kb_dir(kb_dir: Path, data_dir: Path) -> list[Document]:
+    files = read_directory(kb_dir) if kb_dir.is_dir() else []
+    if files:
+        return build_documents(files)
+    packed = [path for path in (kb_dir, kb_dir.with_name(kb_dir.name + ".zip")) if path.is_file()]
+    if packed:
+        return build_documents(read_documents(packed[0]))
+    return load_knowledge_base(kb_dir if kb_dir.is_dir() else data_dir)
 
 
 if __name__ == "__main__":

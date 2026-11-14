@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -178,6 +181,7 @@ class Retriever:
         settings: Settings = SETTINGS,
         client: httpx.Client | None = None,
         use_embeddings: bool = True,
+        cache_dir: Path | None = None,
     ) -> None:
         self.docs = docs
         self.chunks = chunks
@@ -193,6 +197,7 @@ class Retriever:
         self.rerank_lost = 0.0
         self.reranker_off = False
         self.embeddings_off = not use_embeddings
+        self.cache_dir = cache_dir
         self.vectorizer = None
         self.tfidf = None
         self.doc_tfidf = None
@@ -236,8 +241,42 @@ class Retriever:
                 phrases.setdefault((tokens[0], tokens[1]), []).append(doc.doc_id)
         return phrases
 
+    def cache_path(self, texts: list[str]) -> Path | None:
+        if self.cache_dir is None:
+            return None
+        digest = hashlib.sha256(self.settings.emb_model.encode("utf-8"))
+        for text in texts:
+            digest.update(b"\x00" + text.encode("utf-8"))
+        return self.cache_dir / f"embeddings-{digest.hexdigest()[:24]}.npy"
+
+    def load_vectors(self, path: Path | None, rows: int) -> np.ndarray | None:
+        if path is None or not path.is_file():
+            return None
+        try:
+            matrix = np.load(path, allow_pickle=False)
+        except (OSError, ValueError, EOFError):
+            return None
+        usable = matrix.ndim == 2 and matrix.shape[0] == rows and matrix.dtype == np.float32 and np.isfinite(matrix).all()
+        return matrix if usable else None
+
+    def save_vectors(self, path: Path | None, matrix: np.ndarray) -> None:
+        if path is None:
+            return
+        temp = path.with_name(path.name + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with temp.open("wb") as handle:
+                np.save(handle, matrix)
+            os.replace(temp, path)
+        except OSError as exc:
+            print(f"Кэш эмбеддингов не записан: {type(exc).__name__}", file=sys.stderr)
+
     def embed_chunks(self) -> np.ndarray | None:
         texts = [chunk.text[:EMBED_CHARS] for chunk in self.chunks]
+        path = self.cache_path(texts)
+        cached = self.load_vectors(path, len(texts))
+        if cached is not None:
+            return cached
         batches = [texts[i:i + EMBED_BATCH] for i in range(0, len(texts), EMBED_BATCH)]
         until = time.monotonic() + INDEX_SECONDS
         try:
@@ -247,11 +286,13 @@ class Retriever:
             norms = np.linalg.norm(matrix, axis=1, keepdims=True)
             if matrix.ndim != 2 or matrix.shape[0] != len(texts) or not np.isfinite(matrix).all() or (norms == 0).any():
                 raise ValueError("bad embeddings matrix")
-            return matrix / norms
+            vectors = matrix / norms
         except Exception as exc:
             print(f"Эмбеддинги отключены: {type(exc).__name__}; поиск только лексический", file=sys.stderr)
             self.embeddings_off = True
             return None
+        self.save_vectors(path, vectors)
+        return vectors
 
     def note_failure(self, kind: str, exc: Exception, seconds: float = 0.0) -> None:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else 0

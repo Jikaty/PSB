@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 import httpx
 
@@ -16,9 +18,24 @@ import timeline
 import verifier
 from chunker import Chunk, chunk_documents
 from config import FLAGS, SETTINGS, Settings
-from kb_loader import MONTHS, Document, format_dmy, load_knowledge_base, number_pattern, overlaps_suspicious, visible_text
+from kb_loader import (
+    MONTHS, STATUS_VOID, Document, format_dmy, load_knowledge_base, number_pattern, overlaps_suspicious, visible_text,
+)
 
 FALLBACK = "Не удалось сформировать подтверждённый документами ответ по базе знаний."
+MIN_SUPPORT = 0.34
+MAX_WARNING_QUOTE = 160
+SENTENCE_CUT = re.compile(r"(?<=[.!?…])(?<!\b[а-яё]\.)(?<!\b[а-яё]{2}\.)\s+(?=[А-ЯЁA-Z«\"(])")
+SOURCE_TAIL = "Источник:"
+LOCATOR_NUMBER = re.compile(r"\d+(?:\.\d+)*")
+LOCATOR_MARK = r"(?<!\w)(?:п|пункт\w*|ст|стать\w*|ч|част\w*)\.?\s*{}(?![\d.]*\d)"
+STEM = re.compile(r"[а-яa-z]{4,}|\d+")
+OFF_PERIOD = (timeline.NOT_YET, timeline.EXPIRED, timeline.PARTLY)
+WARN_INJECTION = "В вопросе найдено указание изменить правила работы или раскрыть инструкции; оно не выполнено."
+WARN_ERRORS = {
+    "unverified answer": "ответ модели не удалось подтвердить документами",
+    "empty answer": "модель вернула пустой ответ",
+}
 TYPES = ("answer", "partial", "false_premise", "no_info", "ambiguous", "illegal", "off_topic", "injection")
 MAX_ANSWER = 10000
 MAX_CITATIONS = 6
@@ -169,30 +186,53 @@ def build_hints(flags: dict[str, bool], comparisons: list[str] | None = None) ->
     return text
 
 
-def amount_comparisons(engine: Engine, retrieval: search.Retrieval, texts: list[str]) -> list[str]:
+def as_period(value: date | str | None) -> timeline.Period | None:
+    day = value if isinstance(value, date) else timeline.parse_iso(str(value or ""))
+    return timeline.Period(day, day, timeline.dmy(day)) if day else None
+
+
+def with_asked(periods: list[timeline.Period], asked_on: timeline.Period | None) -> list[timeline.Period]:
+    if asked_on is None:
+        return periods
+    return [asked_on, *(period for period in periods if period != asked_on)][: timeline.MAX_PERIODS]
+
+
+def amount_comparisons(
+    engine: Engine, retrieval: search.Retrieval, texts: list[str], asked_on: timeline.Period | None = None
+) -> list[str]:
     by_id = engine.retriever.by_id
     editions = timeline.regulations(engine.docs)
     bound = [by_id[doc_id] for doc_id in retrieval.debug.get("bound", []) if doc_id in by_id]
     visible = {doc.doc_id: visible_text(doc) for doc in editions}
-    periods = timeline.find_periods("\n".join(texts))
+    periods = with_asked(timeline.find_periods("\n".join(texts)), asked_on)
     return timeline.threshold_lines(texts, editions, visible, periods, bound, date.today())
+
+
+def build_engine(docs: list[Document], cache_dir: Path | None = None) -> Engine:
+    chunks = chunk_documents(docs)
+    client = llm_client.make_client()
+    return Engine(
+        settings=SETTINGS,
+        client=client,
+        docs=docs,
+        chunks=chunks,
+        retriever=search.Retriever(docs, chunks, SETTINGS, client, cache_dir=cache_dir),
+        catalog=build_catalog(docs),
+    )
+
+
+def start_engine(docs: list[Document], cache_dir: Path | None = None) -> Engine:
+    global _engine
+    with _engine_lock:
+        _engine = build_engine(docs, cache_dir)
+        return _engine
 
 
 def get_engine() -> Engine:
     global _engine
     with _engine_lock:
         if _engine is None:
-            docs = load_knowledge_base(SETTINGS.data_dir)
-            chunks = chunk_documents(docs)
-            client = llm_client.make_client()
-            _engine = Engine(
-                settings=SETTINGS,
-                client=client,
-                docs=docs,
-                chunks=chunks,
-                retriever=search.Retriever(docs, chunks, SETTINGS, client),
-                catalog=build_catalog(docs),
-            )
+            _engine = build_engine(load_knowledge_base(SETTINGS.data_dir))
         return _engine
 
 
@@ -516,7 +556,126 @@ def verify(
     return verifier.safe_answer(sources, source_labels(sources, engine), FALLBACK), kind, info
 
 
-def answer_question(raw_question: str, use_reranker: bool = True, self_check: bool = True) -> dict:
+def line_span(text: str, start: int, end: int) -> tuple[int, int]:
+    left = text.rfind("\n", 0, start) + 1
+    right = text.find("\n", max(start, end - 1))
+    right = len(text) if right < 0 else right
+    body = text[left:right]
+    return left + len(body) - len(body.lstrip()), right - len(body) + len(body.rstrip())
+
+
+def shown_sources(sources: list[dict], engine: Engine) -> list[dict]:
+    shown: list[dict] = []
+    seen = set()
+    for source in sources:
+        doc = engine.retriever.by_id[source["doc_id"]]
+        start, end, locator = source["start"], source["end"], source["locator"]
+        if start >= 0:
+            chunk = verifier.chunk_at(engine.chunks, doc.doc_id, start)
+            locator = (chunk.locator if chunk else "") or locator
+            wide = line_span(doc.text, start, end)
+            start, end = (start, end) if overlaps_suspicious(*wide, doc.suspicious) else wide
+        key = (doc.doc_id, start, end, "" if start >= 0 else locator)
+        if key in seen:
+            continue
+        seen.add(key)
+        shown.append({
+            "n": len(shown) + 1, "doc_id": doc.doc_id, "title": doc.title, "status": doc.status, "locator": locator,
+            "start": start, "end": end, "text": doc.text[start:end] if start >= 0 else "",
+        })
+    return shown
+
+
+def stems(text: str) -> set[str]:
+    return {word[:5] for word in STEM.findall(fold(text))}
+
+
+def support(sentence: str, source: dict, doc: Document) -> float:
+    low = fold(sentence)
+    score = 0.0
+    number = LOCATOR_NUMBER.search(source["locator"])
+    if number and re.search(LOCATOR_MARK.format(re.escape(number.group())), low):
+        score += 2.0
+    pattern = None if doc.is_law else number_pattern(doc.number)
+    if pattern and pattern.search(low):
+        score += 1.0
+    left, right = stems(sentence), stems(source["text"])
+    if min(len(left), len(right)) >= 3:
+        score += len(left & right) / min(len(left), len(right))
+    return score
+
+
+def mark_sources(answer: str, shown: list[dict], engine: Engine) -> str:
+    parts = SENTENCE_CUT.split(answer)
+    if not shown or not answer:
+        return answer
+    body = [index for index, part in enumerate(parts) if not part.startswith(SOURCE_TAIL)] or list(range(len(parts)))
+    marks: dict[int, list[int]] = {}
+    for source in shown:
+        doc = engine.retriever.by_id[source["doc_id"]]
+        score, index = max((support(parts[index], source, doc), -index) for index in body)
+        marks.setdefault(-index if score >= MIN_SUPPORT else body[-1], []).append(source["n"])
+    for index, numbers in marks.items():
+        part = parts[index]
+        cut = len(part) - 1 if part[-1:] in (".", "!", "?", "…") else len(part)
+        parts[index] = part[:cut].rstrip() + " " + "".join(f"[{number}]" for number in numbers) + part[cut:]
+    return " ".join(parts)
+
+
+def suspicious_warnings(docs: list[Document]) -> list[str]:
+    warnings = []
+    for doc in {doc.doc_id: doc for doc in docs}.values():
+        if not doc.suspicious:
+            continue
+        start, end = doc.suspicious[0]
+        more = f" (и ещё {len(doc.suspicious) - 1})" if len(doc.suspicious) > 1 else ""
+        line = short_line(doc.text[start:end], end - start)
+        quote = line if len(line) <= MAX_WARNING_QUOTE else line[:MAX_WARNING_QUOTE].rstrip() + "…"
+        warnings.append(
+            f"В документе «{doc.title}» найдена подозрительная строка{more}; в ответе она не учитывается: «{quote}»"
+        )
+    return warnings
+
+
+def edition_warnings(docs: list[Document], periods: list[timeline.Period]) -> list[str]:
+    warnings = []
+    for doc in docs:
+        states = [(period, timeline.doc_status(doc, period)) for period in periods]
+        off = [(period, state) for period, state in states if state.startswith(OFF_PERIOD)]
+        for period, state in off:
+            warnings.append(f"Источник «{doc.title}» на дату «{period.label}»: {state.lower()}.")
+        if doc.status == STATUS_VOID and not off:
+            until = f" (действовал по {format_dmy(doc.valid_to)})" if doc.valid_to else ""
+            labels = "; ".join(period.label for period in periods)
+            tail = f"; ответ дан по редакции, применимой на дату «{labels}»" if periods else ": это недействующая редакция"
+            warnings.append(f"Источник «{doc.title}» утратил силу{until}{tail}.")
+        exported = timeline.parse_iso(doc.exported) if doc.is_law else None
+        name = ", ".join(part for part in (doc.law, f"ст. {doc.article}" if doc.article else "") if part)
+        for period in periods:
+            if exported and (period.start or date.min) < exported:
+                warnings.append(
+                    f"{name}: в базе только редакция на {timeline.dmy(exported)}; "
+                    f"редакции на дату «{period.label}» в базе нет."
+                )
+    return warnings
+
+
+def present(result: dict, trace: dict) -> tuple[list[dict], list[str]]:
+    engine = trace.get("engine")
+    shown = shown_sources(result["sources"], engine) if engine else []
+    warnings = [WARN_INJECTION] if trace.get("injected") else []
+    warnings += suspicious_warnings(trace.get("context_docs", []))
+    cited = dict.fromkeys(source["doc_id"] for source in shown)
+    warnings += edition_warnings([engine.retriever.by_id[doc_id] for doc_id in cited], trace.get("periods", []))
+    if result["status"] == "error":
+        reason = str(result["debug"].get("error", ""))
+        warnings.append("Ответ не получен: " + WARN_ERRORS.get(reason, f"ошибка при обработке запроса ({reason})") + ".")
+    return shown, list(dict.fromkeys(warnings))
+
+
+def solve(
+    raw_question: str, use_reranker: bool, self_check: bool, asked_on: timeline.Period | None, trace: dict
+) -> dict:
     started = time.monotonic()
     debug: dict = {}
     try:
@@ -525,17 +684,26 @@ def answer_question(raw_question: str, use_reranker: bool = True, self_check: bo
         injected, clean = verifier.split_injection(asked) if FLAGS["USE_INJECTION_STRIP"] else (False, asked)
         question = clean if injected and clean else asked
         earlier = [text for role, text in history if role == "user"]
-        retrieval = engine.retriever.search(question, earlier, use_reranker)
+        trace.update(engine=engine, injected=injected)
+        mark = time.monotonic()
+        try:
+            retrieval = engine.retriever.search(question, earlier, use_reranker)
+        finally:
+            trace["retrieval"] = time.monotonic() - mark
         debug.update(flags=retrieval.flags, retrieval=retrieval.debug, entities=retrieval.entities, injection=injected)
         use_timeline = FLAGS["USE_TIMELINE"]
-        periods = timeline.find_periods("\n".join([*earlier, question])) if use_timeline else []
+        periods = with_asked(timeline.find_periods("\n".join([*earlier, question])), asked_on) if use_timeline else []
+        asked_label = [asked_on.label] if asked_on else []
+        trace["periods"] = periods or ([asked_on] if asked_on else [])
         catalog = build_catalog(engine.docs, timeline.catalog_marks(engine.docs, periods)) if periods else engine.catalog
         context = build_context(retrieval, engine.retriever.by_id)
         status = date_block(engine, retrieval, periods) if use_timeline else ""
         dates = "; ".join(p.label for p in periods)
         if not use_timeline:
-            dates = ", ".join(date_text(value) for value in retrieval.entities.get("dates", []))
-        comparisons = amount_comparisons(engine, retrieval, [*earlier, question]) if FLAGS["USE_FACT_GUARDS"] else []
+            dates = ", ".join([*asked_label, *(date_text(value) for value in retrieval.entities.get("dates", []))])
+        comparisons = []
+        if FLAGS["USE_FACT_GUARDS"]:
+            comparisons = amount_comparisons(engine, retrieval, [*earlier, question], asked_on)
         hints = build_hints(retrieval.flags, comparisons)
         if injected and not clean:
             hints = "; ".join(part for part in (hints, HINT_INJECTION) if part)
@@ -551,7 +719,11 @@ def answer_question(raw_question: str, use_reranker: bool = True, self_check: bo
         ]
         debug["prompt_chars"] = len(user)
         extra = self_check and llm_client.BUDGET.full()
-        data, info = generate(engine, messages, extra)
+        mark = time.monotonic()
+        try:
+            data, info = generate(engine, messages, extra)
+        finally:
+            trace["llm"] = time.monotonic() - mark
         debug.update(info, self_check=extra)
         kind = str(data.get("type", "")).strip().lower()
         kind = kind if kind in TYPES else "answer"
@@ -559,16 +731,20 @@ def answer_question(raw_question: str, use_reranker: bool = True, self_check: bo
         sources = build_sources(data.get("citations"), engine, stats)
         state = {
             "context": verifier.collect_facts(catalog, context, status, today_text(), *comparisons),
-            "question": verifier.collect_facts(str(raw_question or "")),
+            "question": verifier.collect_facts(str(raw_question or ""), *asked_label),
             "context_docs": retrieval.selected_docs + [engine.retriever.by_id[c.doc_id] for c in retrieval.law_chunks],
             "bound": retrieval.debug.get("bound", []) if retrieval.entities.get("numbers") or retrieval.entities.get("orgs") else [],
             "asked": "?" in asked and not (injected and not clean),
         }
+        trace["context_docs"] = state["context_docs"]
         if FLAGS["USE_VERIFIER"]:
+            mark = time.monotonic()
             answer, kind, check = verify(
                 engine, blocks, name_ids(clean_answer(data.get("answer")), engine), kind, sources, stats.get("dropped", 0),
                 state, self_check and FLAGS["USE_SELF_CHECK"] and llm_client.BUDGET.full(),
             )
+            if check["level2"] not in ("not needed", "skipped"):
+                trace["llm"] += time.monotonic() - mark
         else:
             answer, check = clean_answer(data.get("answer")), {"issues": [], "fixes": [], "level2": "off", "safe": False}
         debug["calls"] = debug.get("calls", 1) + (check["level2"] not in ("not needed", "skipped", "off"))
@@ -587,3 +763,35 @@ def answer_question(raw_question: str, use_reranker: bool = True, self_check: bo
     except Exception as exc:
         debug.update(error=type(exc).__name__, seconds=round(time.monotonic() - started, 2))
         return {"answer": FALLBACK, "status": "error", "sources": [], "debug": debug}
+
+
+def answer_with_sources(
+    raw_question: str,
+    as_of_date: date | str | None = None,
+    cite: bool = False,
+    use_reranker: bool = True,
+    self_check: bool = True,
+) -> dict:
+    started = time.monotonic()
+    trace: dict = {"retrieval": 0.0, "llm": 0.0}
+    result = solve(raw_question, use_reranker, self_check, as_period(as_of_date), trace)
+    answer, shown, warnings = result["answer"], [], []
+    try:
+        shown, warnings = present(result, trace)
+        answer = mark_sources(answer, shown, trace["engine"]) if cite else answer
+    except Exception as exc:
+        print(f"Источники для показа построены не полностью: {type(exc).__name__}", file=sys.stderr)
+    timings = {
+        "retrieval": round(trace["retrieval"] * 1000),
+        "llm": round(trace["llm"] * 1000),
+        "total": round((time.monotonic() - started) * 1000),
+    }
+    return {
+        "answer": answer, "status": result["status"], "sources": shown, "citations": result["sources"],
+        "warnings": warnings, "timings_ms": timings, "debug": result["debug"],
+    }
+
+
+def answer_question(raw_question: str, use_reranker: bool = True, self_check: bool = True) -> dict:
+    result = answer_with_sources(raw_question, None, False, use_reranker, self_check)
+    return {"answer": result["answer"], "status": result["status"], "sources": result["citations"], "debug": result["debug"]}
