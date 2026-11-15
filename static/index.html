@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Юридический ассистент</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">§</span>
+      <div>
+        <div class="brand-name">Юридический ассистент</div>
+        <div class="brand-note">Отвечает только по документам базы знаний</div>
+      </div>
+    </div>
+    <div class="tools">
+      <label class="date-field" for="as-of" title="Ответ будет дан по редакциям документов, действовавшим на эту дату">
+        <span>Дата события</span>
+        <input type="date" id="as-of" name="as_of_date" min="1990-01-01" max="2100-12-31">
+      </label>
+      <button type="button" class="ghost small" id="as-of-clear" hidden>Сбросить</button>
+      <div class="docs-menu">
+        <button type="button" class="ghost" id="docs-toggle" aria-expanded="false" aria-controls="docs-panel">
+          Документы <span class="count" id="docs-count"></span>
+        </button>
+        <div class="docs-panel" id="docs-panel" hidden>
+          <div id="docs-list"></div>
+        </div>
+      </div>
+      <button type="button" class="ghost" id="new-chat">Новый диалог</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Диалог с ассистентом">
+      <div class="feed" id="feed">
+        <div class="welcome" id="welcome">
+          <h1>Вопрос по договорам, регламентам и законам из базы</h1>
+          <p>Ассистент отвечает только по документам базы знаний и показывает фрагменты, на которые опирается. Если нужна редакция на определённый день, укажите «Дату события» вверху.</p>
+          <div class="examples" id="examples">
+            <button type="button" class="example" data-question="Какой срок оплаты по договору П-17/2024?">Какой срок оплаты по договору П-17/2024?</button>
+            <button type="button" class="example" data-question="Какой гарантийный срок по договору с «Альфа-Трейдинг»?">Какой гарантийный срок по договору с «Альфа-Трейдинг»?</button>
+            <button type="button" class="example" data-question="Кто согласует договор на 12 млн рублей, заключённый в феврале 2025 года?">Кто согласует договор на 12 млн рублей, заключённый в феврале 2025 года?</button>
+          </div>
+        </div>
+        <div class="messages" id="messages" aria-live="polite"></div>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="question" rows="2" maxlength="4000" placeholder="Задайте вопрос по документам" aria-label="Вопрос"></textarea>
+        <button type="submit" class="primary" id="send">Отправить</button>
+      </form>
+      <p class="composer-hint">Enter — отправить, Shift+Enter — перенос строки</p>
+    </section>
+
+    <aside class="viewer" id="viewer" aria-label="Просмотр документа">
+      <div class="viewer-head" id="viewer-head" hidden>
+        <div class="viewer-heading">
+          <h2 id="viewer-title"></h2>
+          <span id="viewer-status"></span>
+        </div>
+        <div class="viewer-meta" id="viewer-meta"></div>
+        <button type="button" class="ghost small viewer-close" id="viewer-close">Закрыть</button>
+      </div>
+      <div class="viewer-note" id="viewer-note" hidden></div>
+      <div class="viewer-empty" id="viewer-empty">
+        <p>Здесь откроется документ.</p>
+        <p>Нажмите на источник под ответом или выберите документ в списке «Документы».</p>
+      </div>
+      <div class="doc-text" id="doc-text" tabindex="0" hidden></div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
