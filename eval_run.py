@@ -19,7 +19,7 @@ CITE_CAP = 0.75
 MAX_ANSWER_CHARS = 10000
 FIELDS = [
     "id", "category", "dialog", "question", "answer", "golden", "score", "judge_score", "fabricated",
-    "reason", "cite_missing", "forbidden_hit", "words", "status", "json_ok", "calls", "error", "seconds",
+    "reason", "ref_cover", "cite_missing", "forbidden_hit", "words", "status", "json_ok", "calls", "error", "seconds",
 ]
 REFUSAL_STATUSES = ("no_info", "off_topic", "error")
 REFUSAL_CATEGORIES = ("no_info", "off_topic")
@@ -60,6 +60,27 @@ def norm(text: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", t)
 
 
+FACT_LOCATOR = re.compile(r"\b(п|ст|ч)(?:\.|ункт\w*|ать\w*|аст\w*)\s*(\d+(?:\.\d+)*)", re.I)
+FACT_DOC = re.compile(r"\b[А-ЯA-Z]{1,3}-\d+(?:/\d+)?|\b\d+-ФЗ\b")
+FACT_NUMBER = re.compile(r"\d+(?:[  ]\d{3})+|\d+(?:[.,]\d+)*")
+
+
+def facts(text: str) -> set[str]:
+    found = {f"{m.group(1).lower()}{m.group(2)}" for m in FACT_LOCATOR.finditer(text)}
+    rest = FACT_LOCATOR.sub(" ", text)
+    found |= {m.group(0).upper() for m in FACT_DOC.finditer(rest)}
+    rest = FACT_DOC.sub(" ", rest)
+    found |= {re.sub(r"[  ]", "", m.group(0)).replace(",", ".") for m in FACT_NUMBER.finditer(rest)}
+    return found
+
+
+def ref_cover(golden: str, answer: str) -> float | None:
+    wanted = facts(golden)
+    if not wanted:
+        return None
+    return len(wanted & facts(answer)) / len(wanted)
+
+
 def split_items(value: str) -> list[str]:
     return [p.strip() for p in value.split(";") if p.strip()]
 
@@ -73,7 +94,9 @@ def load_cases(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def select_cases(cases: list[dict], only: str, ids: str) -> list[dict]:
+def select_cases(cases: list[dict], only: str, ids: str, demo: bool = False) -> list[dict]:
+    if demo:
+        cases = [c for c in cases if c["id"].isdigit()]
     if only:
         wanted = {c.strip() for c in only.split(",") if c.strip()}
         cases = [c for c in cases if c["category"] in wanted or (("dialog" in wanted) and is_dialog(c["question"]))]
@@ -250,6 +273,7 @@ def row(case: dict, answer: str, status: str, error: str, det: dict, verdict: di
         "judge_score": "" if verdict is None else verdict["score"],
         "fabricated": "" if verdict is None else int(verdict["fabricated"]),
         "reason": "" if verdict is None else verdict["reason"],
+        "ref_cover": "" if (cover := ref_cover(case["golden"], answer)) is None else round(cover, 2),
         "cite_missing": "; ".join(det["cite_missing"]),
         "forbidden_hit": "; ".join(det["forbidden_hit"]),
         "words": det["words"],
@@ -292,7 +316,7 @@ def print_summary(rows: list[dict]) -> None:
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         groups[r["category"]].append(r)
-    print(f"\n{'категория':<16}{'кейсов':>7}{'балл':>7}{'выдумок':>9}{'пустых':>8}{'>150 сл':>9}")
+    print(f"\n{'категория':<16}{'кейсов':>7}{'балл':>7}{'покрытие':>10}{'выдумок':>9}{'пустых':>8}{'>150 сл':>9}")
     for name in sorted(groups):
         print_line(name, groups[name])
     dialogs = [r for r in rows if r["dialog"]]
@@ -339,7 +363,8 @@ def print_line(name: str, rs: list[dict]) -> None:
     fab = sum(1 for r in rs if r["fabricated"] == 1)
     empty = sum(1 for r in rs if not r["answer"].strip())
     long_ = sum(1 for r in rs if r["words"] > 150)
-    print(f"{name:<16}{len(rs):>7}{mean(vals):>7}{fab:>9}{empty:>8}{long_:>9}")
+    cover = [float(r["ref_cover"]) for r in rs if r["ref_cover"] != ""]
+    print(f"{name:<16}{len(rs):>7}{mean(vals):>7}{mean(cover):>10}{fab:>9}{empty:>8}{long_:>9}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -351,13 +376,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--golden", action="store_true", help="подать эталон вместо ответа (проверка оценщика)")
     p.add_argument("--answers", default="", help="CSV id,answer вместо запуска pipeline")
     p.add_argument("--no-judge", action="store_true", help="только детерминированные проверки")
+    p.add_argument("--demo", action="store_true", help="только демо-кейсы с эталонами организаторов (числовые id)")
     return p.parse_args()
 
 
 def main() -> None:
     configure_stdout()
     args = parse_args()
-    cases = select_cases(load_cases(Path(args.cases)), args.only, args.ids)
+    cases = select_cases(load_cases(Path(args.cases)), args.only, args.ids, args.demo)
     if not cases:
         print("нет кейсов под заданный фильтр")
         return

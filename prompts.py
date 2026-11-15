@@ -139,6 +139,35 @@ FULL_RULES = (
     ),
 )
 
+REF_RULES = (
+    (
+        "- Русский язык, 1–4 предложения, не более 150 слов; длиннее — только если этого требует обоснование.",
+        """- Русский язык, 2–4 предложения, 30–80 слов, не более 150. Первое предложение — прямой ответ на вопрос
+  с цифрами и пунктом. Затем одно-два положения из того же документа, без которых юрист применит ответ неверно
+  или неполно: соседний пункт того же раздела (порядок, оформление, что оплачивается отдельно, с какого момента
+  считается срок), исключение или условие изменения, связанная сумма или срок, другая редакция с её значением.
+  Каждое такое положение — со своим пунктом; если в документе нет нумерации пунктов, ссылайся на сам документ
+  (название и номер из каталога) без пункта и не бери номера пунктов из других документов. Добавляй только
+  положения, которые касаются предмета вопроса; описание сторон, объекта и реквизитов не добавляй. Если таких
+  положений в документе нет, ничего не добавляй.
+  Образец формы (документ вымышленный, его цифры не используй): вопрос «Какой срок поставки по договору
+  № Х-1/2020?» → ответ «По договору поставки № Х-1/2020 срок поставки — 10 рабочих дней с даты оплаты (п. 3.1).
+  Датой оплаты считается дата зачисления денег на счёт поставщика (п. 3.2); за просрочку поставщик платит
+  неустойку 0,1% в день (п. 7.1).»""",
+    ),
+    (
+        "- Не добавляй общих рекомендаций, оценок рисков и сведений «для полноты», которых нет в документах.",
+        """- Не добавляй общих рекомендаций и оценок рисков от себя. Дополнительные положения — только из переданных
+  документов, дословно по смыслу и со ссылкой на пункт; положения из других документов не смешивай с ответом.
+- Если вопрос о событии в прошлом, а значение в документе с тех пор изменилось, назови и новое значение с
+  редакцией, прямо сказав, что к этому событию оно не применяется.
+- Если в вопросе неверная цифра или условие, после исправления назови положение документа, которое могло бы
+  её изменить (например, порядок повышения), если оно есть, и скажи, подтверждено ли такое изменение в базе.
+- Если документ не устанавливает то, о чём спрашивают, так и скажи и назови, где это определяется или какой
+  документ нужен, если это указано в документе.""",
+    ),
+)
+
 FORMAT_REMINDER = (
     "Предыдущий вывод не является корректным JSON. Верни строго один JSON-объект с полями "
     "type, answer, citations, missing — без пояснений, без markdown и без текста вокруг."
@@ -181,35 +210,46 @@ NO_HINTS = "нет"
 NO_CONTEXT = "Подходящих документов и фрагментов не найдено."
 
 
-def system_template(extra_rules: bool, step7: bool, full: bool = False) -> str:
+def system_template(extra_rules: bool, step7: bool, full: bool = False, ref: bool = False) -> str:
     text = SYSTEM_PROMPT
     if not step7:
         for new, base in STEP7_RULES:
             text = text.replace(new, base)
-    if full:
-        for base, new in FULL_RULES:
-            text = text.replace(base, new)
+    rules = REF_RULES if ref else FULL_RULES if full else ()
+    for base, new in rules:
+        text = text.replace(base, new)
     if extra_rules:
         text = text.replace(EXTRA_ANCHOR, "\n" + EXTRA_RULES + EXTRA_ANCHOR, 1)
     return text
 
 
 def build_system_prompt(
-    today: str, extra_rules: bool | None = None, step7: bool | None = None, full: bool | None = None
+    today: str,
+    extra_rules: bool | None = None,
+    step7: bool | None = None,
+    full: bool | None = None,
+    ref: bool | None = None,
 ) -> str:
     extra_rules = FLAGS["USE_EXTRA_RULES"] if extra_rules is None else extra_rules
     step7 = FLAGS["USE_STEP7_PROMPT"] if step7 is None else step7
     full = FLAGS["USE_FULL_ANSWERS"] if full is None else full
-    return system_template(extra_rules, step7, full).format(today=today)
+    ref = FLAGS["USE_REF_STYLE"] if ref is None else ref
+    return system_template(extra_rules, step7, full, ref).format(today=today)
 
 
 VERIFIER_LENGTH = "- Русский язык, 1–4 предложения, сплошной текст без списков, markdown и переводов строк."
 VERIFIER_FULL_LENGTH = FULL_RULES[0][1] + "\n- Сплошной текст без списков, markdown и переводов строк."
+VERIFIER_REF_LENGTH = (
+    "- Русский язык, 2–4 предложения, не более 150 слов. Верные дополнительные положения со ссылкой на пункт "
+    "не удаляй.\n- Сплошной текст без списков, markdown и переводов строк."
+)
 
 
-def build_verifier_system(today: str, full: bool | None = None) -> str:
+def build_verifier_system(today: str, full: bool | None = None, ref: bool | None = None) -> str:
     full = FLAGS["USE_FULL_ANSWERS"] if full is None else full
-    text = VERIFIER_PROMPT.replace(VERIFIER_LENGTH, VERIFIER_FULL_LENGTH) if full else VERIFIER_PROMPT
+    ref = FLAGS["USE_REF_STYLE"] if ref is None else ref
+    length = VERIFIER_REF_LENGTH if ref else VERIFIER_FULL_LENGTH if full else ""
+    text = VERIFIER_PROMPT.replace(VERIFIER_LENGTH, length) if length else VERIFIER_PROMPT
     return text.format(today=today)
 
 
