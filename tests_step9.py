@@ -384,9 +384,9 @@ with TestClient(web.app) as api:
     listing = api.get("/api/docs")
     cards = listing.json()
     check("docs: list", listing.status_code == 200 and len(cards) == 21 and [c["doc_id"] for c in cards] == [d.doc_id for d in docs])
-    check("docs: card keys", all(set(c) == {"doc_id", "title", "type", "status", "valid_from", "valid_to"} for c in cards))
+    check("docs: card keys", all(set(c) == {"doc_id", "title", "type", "status", "valid_from", "valid_to", "auto_renewal"} for c in cards))
     by_id = {c["doc_id"]: c for c in cards}
-    check("docs: void edition", by_id[old.doc_id] == {"doc_id": old.doc_id, "title": old.title, "type": "регламент", "status": "утратил силу", "valid_from": "2023-01-10", "valid_to": "2025-02-28"})
+    check("docs: void edition", by_id[old.doc_id] == {"doc_id": old.doc_id, "title": old.title, "type": "регламент", "status": "утратил силу", "valid_from": "2023-01-10", "valid_to": "2025-02-28", "auto_renewal": False})
     check("docs: law without dates", by_id[law.doc_id]["valid_from"] is None and by_id[law.doc_id]["valid_to"] is None and by_id[law.doc_id]["type"] == "статья закона")
     one = api.get("/api/docs/" + p17.doc_id)
     check("doc: full text", one.status_code == 200 and one.json()["text"] == p17.text and one.json()["title"] == p17.title and one.json()["suspicious"] == [])

@@ -58,6 +58,7 @@ class Card(BaseModel):
     status: str
     valid_from: str | None
     valid_to: str | None
+    auto_renewal: bool
 
 
 class Span(BaseModel):
@@ -98,6 +99,7 @@ def card(doc: Document) -> dict:
     return {
         "doc_id": doc.doc_id, "title": doc.title, "type": doc.doc_type, "status": doc.status,
         "valid_from": doc.valid_from or None, "valid_to": doc.valid_to or None,
+        "auto_renewal": doc.auto_renewal and bool(doc.valid_to),
     }
 
 

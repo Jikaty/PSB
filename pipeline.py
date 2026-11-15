@@ -115,7 +115,8 @@ def period(doc: Document) -> str:
         parts.append("с " + format_dmy(doc.valid_from))
     if doc.valid_to:
         parts.append("по " + format_dmy(doc.valid_to))
-    return "срок действия: " + " ".join(parts) if parts else ""
+    renewal = ", " + timeline.RENEWAL_NOTE if doc.auto_renewal and doc.valid_to else ""
+    return "срок действия: " + " ".join(parts) + renewal if parts else ""
 
 
 def catalog_line(doc: Document, mark: str = "") -> str:

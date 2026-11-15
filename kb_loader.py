@@ -27,6 +27,7 @@ PLACE_DATE = re.compile(r"^г\.\s*[^—–\-]+[—–\-]\s*(" + DATE_ANY + ")", 
 VALID_FROM = re.compile(r"действует\s+с\s+(" + DATE_ANY + ")", re.I)
 EDITION = re.compile(r"редакция\s+от\s+(" + DATE_ANY + ")", re.I)
 VALID_TO = re.compile(r"действует\s+до\s+(" + DATE_ANY + ")", re.I)
+AUTO_RENEWAL = re.compile(r"автоматически\s+(?:продлева|пролонгир)|(?:считается|будет\s+считаться)\s+пролонгир", re.I)
 VOID_BANNER = re.compile(r"утратил\w*\s+силу", re.I)
 NUMBER = re.compile(r"№\s*([^\s,;()«»]+)")
 ORG = re.compile(r"(ООО|АО|ПАО|ЗАО|ОАО|ИП)\s*«([^»]+)»")
@@ -96,6 +97,7 @@ class Document:
     status: str
     valid_from: str
     valid_to: str
+    auto_renewal: bool = False
     relates_to: list[str] = field(default_factory=list)
     text: str = ""
     suspicious: list[tuple[int, int]] = field(default_factory=list)
@@ -407,6 +409,7 @@ def build_company_card(file_name: str, text: str) -> Document:
         valid_from = doc_date
 
     valid_to = ""
+    auto_renewal = False
     status = STATUS_ACTIVE
     if banner:
         status = STATUS_VOID
@@ -415,6 +418,7 @@ def build_company_card(file_name: str, text: str) -> Document:
         match = VALID_TO.search(text)
         if match:
             valid_to = to_iso(match.group(1))
+            auto_renewal = bool(AUTO_RENEWAL.search(text[match.end():].split("\n", 1)[0]))
 
     return Document(
         doc_id="",
@@ -427,6 +431,7 @@ def build_company_card(file_name: str, text: str) -> Document:
         status=status,
         valid_from=valid_from,
         valid_to=valid_to,
+        auto_renewal=auto_renewal,
     )
 
 

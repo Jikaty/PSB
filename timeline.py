@@ -25,6 +25,7 @@ IN_FORCE = "ДЕЙСТВОВАЛ"
 NOT_YET = "ЕЩЁ НЕ ДЕЙСТВОВАЛ"
 EXPIRED = "УЖЕ НЕ ДЕЙСТВОВАЛ"
 PARTLY = "ДЕЙСТВОВАЛ ЧАСТЬ ПЕРИОДА"
+RENEWAL_NOTE = "продлевается автоматически"
 
 
 @dataclass(frozen=True)
@@ -96,12 +97,15 @@ def find_periods(text: str) -> list[Period]:
 
 def doc_status(doc: Document, period: Period) -> str:
     start, end = parse_iso(doc.valid_from), parse_iso(doc.valid_to)
+    span = " ".join(part for part in ("с " + dmy(start) if start else "", "по " + dmy(end) if end else "") if part)
+    if doc.auto_renewal and end:
+        span += ", " + RENEWAL_NOTE
+        end = None
     if start and period.end < start:
         return f"{NOT_YET} (действует с {dmy(start)})"
     if end and period.start and period.start > end:
         return f"{EXPIRED} (действовал по {dmy(end)})"
     partial = (start and (period.start is None or period.start < start)) or (end and period.end > end)
-    span = " ".join(part for part in ("с " + dmy(start) if start else "", "по " + dmy(end) if end else "") if part)
     if partial:
         return f"{PARTLY} ({span})"
     return f"{IN_FORCE} ({span})" if span else IN_FORCE

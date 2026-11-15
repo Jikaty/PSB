@@ -5,6 +5,7 @@ import sys
 from datetime import date
 
 import httpx
+import kb_loader
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
@@ -72,6 +73,16 @@ check("year spans both editions", timeline.PARTLY in marks[old_rules.doc_id] and
 check("boundary last day", timeline.IN_FORCE in timeline.catalog_marks(docs, period("28.02.2025"))[old_rules.doc_id][:40])
 check("boundary first day", timeline.NOT_YET not in timeline.catalog_marks(docs, period("01.03.2025"))[new_rules.doc_id])
 check("no periods no marks", timeline.catalog_marks(docs, []) == {})
+check("auto renewal parsed", pt05.auto_renewal and pt05.valid_to == "2024-12-31" and not p17.auto_renewal and p17.valid_to == "2026-12-31")
+check("only pt05 renews", [d.doc_id for d in docs if d.auto_renewal] == [pt05.doc_id])
+renewed = timeline.catalog_marks(docs, period("в марте 2025 года"))
+check("renewed contract in force", renewed[pt05.doc_id] == "на дату «март 2025 г.»: ДЕЙСТВОВАЛ (с 20.06.2023 по 31.12.2024, продлевается автоматически)")
+check("renewed contract not yet", timeline.NOT_YET in timeline.catalog_marks(docs, period("в мае 2023 года"))[pt05.doc_id])
+check("fixed term still expires", timeline.EXPIRED in timeline.catalog_marks(docs, period("в марте 2027 года"))[p17.doc_id])
+check("renewal in catalog", pipeline.period(pt05) == "срок действия: с 20.06.2023 по 31.12.2024, продлевается автоматически" and "продлева" not in pipeline.period(p17))
+check("renewal no edition warning", pipeline.edition_warnings([pt05], period("в марте 2025 года")) == [])
+renew_card = kb_loader.build_company_card("x.txt", "ДОГОВОР № X-1\nг. Москва — 01.02.2024\n9.1. Договор действует до 31.12.2024. Продление возможно по соглашению сторон.\n10.1. Договор автоматически продлевается.")
+check("renewal only same line", renew_card.valid_to == "2024-12-31" and not renew_card.auto_renewal)
 
 clauses = timeline.find_clauses(k12, texts[k12.doc_id])
 check("letter clause date", len(clauses) == 1 and clauses[0].start == date(2025, 4, 21))

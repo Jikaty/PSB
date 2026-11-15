@@ -66,7 +66,7 @@ function validity(doc) {
   if (doc.valid_to) {
     parts.push("по " + formatDate(doc.valid_to));
   }
-  return parts.join(" ");
+  return parts.join(" ") + (doc.auto_renewal ? ", продлевается автоматически" : "");
 }
 
 function save() {
