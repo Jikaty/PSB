@@ -398,7 +398,8 @@ with TestClient(web.app) as api:
     before = len(state["calls"])
     asked = api.post("/api/ask", json={"question": QP})
     body = asked.json()
-    check("ask: 200 and keys", asked.status_code == 200 and set(body) == {"answer", "sources", "warnings", "timings_ms"})
+    check("ask: 200 and keys", asked.status_code == 200 and set(body) == {"answer", "status", "sources", "warnings", "timings_ms"})
+    check("ask: status answer", body["status"] == "answer")
     check("ask: 30 days with marker", "30 календарных дней" in body["answer"] and body["answer"].endswith("п. 4.2) [1]."))
     src = body["sources"][0]
     check("ask: source keys", set(src) == {"n", "doc_id", "title", "status", "locator", "start", "end", "text"})
@@ -424,11 +425,22 @@ with TestClient(web.app) as api:
     answers(reply(OKP, CP))
     injected = api.post("/api/ask", json={"question": QI}).json()
     check("ask: injection warning", pipeline.WARN_INJECTION in injected["warnings"] and injected["answer"].startswith(verifier.REFUSAL))
+    check("ask: status injection", injected["status"] == "injection")
+
+    for kind in ("partial", "false_premise", "ambiguous", "illegal"):
+        answers(reply(OKP, CP, kind))
+        typed = api.post("/api/ask", json={"question": QP}).json()
+        check(f"ask: status {kind}", typed["status"] == kind and typed["sources"][0]["doc_id"] == p17.doc_id)
+    answers(reply("Запрос не относится к юридической тематике и документам базы.", [], "off_topic"))
+    aside = api.post("/api/ask", json={"question": "Какая завтра погода в Москве?"}).json()
+    check("ask: status off_topic", aside["status"] == "off_topic" and aside["sources"] == [])
+    check("ask: status is pipeline status", set(pipeline.TYPES) == {"answer", "partial", "no_info", "false_premise", "ambiguous", "injection", "illegal", "off_topic"})
 
     state["fail"] = True
     broken = api.post("/api/ask", json={"question": QP})
     check("ask: model failure -> 200", broken.status_code == 200 and broken.json()["answer"] == pipeline.FALLBACK and broken.json()["sources"] == [])
     check("ask: model failure warning", any(w.startswith("Ответ не получен") for w in broken.json()["warnings"]))
+    check("ask: status error", broken.json()["status"] == "error")
     state["fail"] = False
 
     check("static mounted at root", any(getattr(route, "name", "") == "static" and getattr(route, "path", None) == "" for route in web.app.routes))

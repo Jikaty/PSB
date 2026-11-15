@@ -351,6 +351,35 @@ button:disabled {
   color: var(--void);
 }
 
+.kind {
+  width: fit-content;
+  margin-bottom: 8px;
+  padding: 1px 9px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.kind-ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.kind-warn {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+.kind-stop {
+  background: var(--void-bg);
+  color: var(--void);
+}
+
+.kind-muted {
+  background: var(--bg);
+  color: var(--muted);
+}
+
 .message-text {
   margin: 0;
   white-space: pre-wrap;

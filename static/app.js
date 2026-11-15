@@ -9,6 +9,16 @@ const STATUS_VOID = "утратил силу";
 const LAW_TYPE = "статья закона";
 const SUSPICIOUS_NOTE = "Не является содержанием документа: строка исключена из ответов";
 const NO_FRAGMENT = "Фрагмент в документе не определён — откроется документ целиком.";
+const KIND_LABELS = new Map([
+  ["answer", ["Ответ подтверждён документами", "ok"]],
+  ["partial", ["Частичный ответ", "warn"]],
+  ["no_info", ["В базе нет данных", "muted"]],
+  ["false_premise", ["Ложная предпосылка в вопросе", "warn"]],
+  ["ambiguous", ["Нужно уточнение", "warn"]],
+  ["injection", ["Попытка изменить инструкции отклонена", "stop"]],
+  ["illegal", ["Запрос отклонён", "stop"]],
+  ["off_topic", ["Вне тематики", "muted"]],
+]);
 
 const state = { messages: [], docs: [], cache: new Map(), busy: false, opened: null, timer: 0 };
 
@@ -153,6 +163,7 @@ async function ask(text) {
     reply = {
       role: "assistant",
       answer: String(body.answer || ""),
+      status: String(body.status || ""),
       sources: Array.isArray(body.sources) ? body.sources : [],
       warnings: Array.isArray(body.warnings) ? body.warnings : [],
       timings_ms: body.timings_ms || null,
@@ -256,6 +267,10 @@ function timingText(timings) {
 
 function answerCard(message, index) {
   const card = make("article", "message assistant" + (message.failed ? " failed" : ""));
+  const kind = KIND_LABELS.get(message.status);
+  if (kind && !isFailed(message)) {
+    card.append(make("div", "kind kind-" + kind[1], kind[0]));
+  }
   const text = make("p", "message-text");
   fillAnswer(text, message, index);
   card.append(text);

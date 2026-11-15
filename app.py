@@ -45,6 +45,7 @@ class Timings(BaseModel):
 
 class Answer(BaseModel):
     answer: str
+    status: str
     sources: list[Source]
     warnings: list[str]
     timings_ms: Timings

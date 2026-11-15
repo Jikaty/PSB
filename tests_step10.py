@@ -69,6 +69,19 @@ check("api endpoints", '"/api/ask"' in script and '"/api/docs"' in script and '"
 check("request fields", "as_of_date: asOf" in script and "question: withContext(question, pairs)" in script)
 check("response fields", all(name in script for name in ("timings_ms", "warnings", "sources", "source.locator", "source.status", "source.start", "source.end", "doc.suspicious")))
 check("status labels", 'STATUS_VOID = "утратил силу"' in script and ".badge.void" in style and ".badge.active" in style)
+kinds = {
+    "answer": "Ответ подтверждён документами", "partial": "Частичный ответ", "no_info": "В базе нет данных",
+    "false_premise": "Ложная предпосылка в вопросе", "ambiguous": "Нужно уточнение",
+    "injection": "Попытка изменить инструкции отклонена", "illegal": "Запрос отклонён", "off_topic": "Вне тематики",
+}
+labels = dict(re.findall(r'\["([a-z_]+)", \["([^"]+)", "[a-z]+"\]\]', script))
+check("kind labels", labels == kinds)
+check("kind labels cover pipeline types", set(labels) == set(web.pipeline.TYPES))
+tones = set(re.findall(r'\["[a-z_]+", \["[^"]+", "([a-z]+)"\]\]', script))
+check("kind styles", ".kind {" in style and all(f".kind-{tone} {{" in style for tone in tones) and len(tones) == 4)
+check("kind from response status", "status: String(body.status || \"\")" in script and "KIND_LABELS.get(message.status)" in script)
+check("kind label above answer", script.index('make("div", "kind kind-"') < script.index("fillAnswer(text, message, index);"))
+check("no kind label on failure", "if (kind && !isFailed(message))" in script)
 check("spinner and warning styles", ".spinner" in style and "@keyframes spin" in style and ".warnings" in style and "--warn-bg: #fff4c7" in style)
 check("highlight and suspicious styles", "mark.hit" in style and ".doc-line.suspicious" in style and ".suspicious-note" in style)
 check("narrow layout", "@media (max-width: 1023px)" in style and "body.viewer-open .viewer" in style)
