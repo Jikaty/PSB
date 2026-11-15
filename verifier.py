@@ -13,6 +13,7 @@ QUOTE_RATIO = 90
 NAME_RATIO = 84
 MIN_QUOTE = 8
 MIN_LOCATOR_QUOTE = 20
+OWNER_WINDOW = 90
 ALWAYS_OK = {0.0, 1.0, 2.0, 3.0}
 NEED_CITATIONS = ("answer", "partial", "false_premise", "ambiguous", "illegal")
 HARD = ("unknown_number", "unknown_date", "unknown_point", "unknown_article", "unknown_document", "unknown_org")
@@ -271,13 +272,40 @@ def fix_doc_kinds(report: Report, docs: list[Document]) -> str:
     return answer
 
 
+def owner_doc(answer: str, start: int, docs: list[Document]) -> Document | None:
+    head = re.split(r"[.!?]\s+(?=[А-ЯЁA-Z])", answer[max(0, start - OWNER_WINDOW):start])[-1]
+    folded = fold(head).lower()
+    best, best_end = None, -1
+    for doc in docs:
+        if doc.is_law:
+            continue
+        pattern = number_pattern(doc.number)
+        spots = [m.end() for m in pattern.finditer(head)] if pattern else []
+        title = fold(doc.title).lower()
+        if title and title in folded:
+            spots.append(folded.rindex(title) + len(title))
+        if spots and max(spots) > best_end:
+            best, best_end = doc, max(spots)
+    return best
+
+
 def strip_points(report: Report, answer: str, context_docs: list[Document], chunks: list[Chunk], context: Facts, question: Facts) -> str:
     ids = {doc.doc_id for doc in context_docs}
     locators = {fold(c.locator) for c in chunks if c.doc_id in ids}
     multi = {point_of(c.locator) for c in chunks if c.doc_id in ids} - {""}
+    pointless = {
+        doc.doc_id for doc in context_docs
+        if not doc.is_law and not any(point_of(c.locator) for c in chunks if c.doc_id == doc.doc_id)
+    }
     has_law = bool(ARTICLE.search(answer)) or any(doc.is_law for doc in context_docs)
     for match in list(ANY_POINT.finditer(answer)):
         point = match.group(1)
+        owner = owner_doc(answer, match.start(), context_docs)
+        own_point = re.compile(POINT_TEXT.format(re.escape(point)), re.I)
+        if owner and owner.doc_id in pointless and not own_point.search(owner.text) and match.group() in answer:
+            answer = answer.replace(match.group(), "", 1)
+            report.fixes.append(f"убрана ссылка на п. {point}: в документе «{owner.title}» нет нумерованных пунктов")
+            continue
         if "." not in point and has_law:
             continue
         named = re.compile(POINT_TEXT.format(re.escape(point)), re.I)

@@ -205,4 +205,28 @@ res, seen = run([reply(BADP, CP), verdict], QP, USE_FACT_GUARDS=False)
 check("pipeline off: level 2 called", len(seen) == 2 and res["debug"]["verification"]["level2"] == "fix")
 check("pipeline off: issue reported", any(i["code"] == "unknown_article" for i in res["debug"]["verification"]["issues"]))
 
+memo_doc = next(d for d in docs if d.number == "ЮО-7")
+k12_doc = next(d for d in docs if d.number == "К-12")
+p17_doc = next(d for d in docs if d.number == "П-17/2024")
+empty = verifier.collect_facts("")
+
+
+def strip(answer, ctx, context=empty):
+    report = verifier.Report(answer)
+    return verifier.strip_points(report, answer, ctx, chunks, context, empty), report.fixes
+
+
+out, fixes = strip("Выдача не более трёх рабочих дней (Служебная записка об архиве договоров № ЮО-7 от 12.05.2025, п. 3) [1].", [memo_doc])
+check("memo point stripped", out == "Выдача не более трёх рабочих дней (Служебная записка об архиве договоров № ЮО-7 от 12.05.2025) [1]." and len(fixes) == 1)
+out, _ = strip("Источник: Служебная записка об архиве договоров, № ЮО-7, п. 3.", [memo_doc, next(d for d in docs if d.is_law)])
+check("memo point stripped with law in context", out == "Источник: Служебная записка об архиве договоров, № ЮО-7.")
+out, _ = strip("Источник: Служебная записка об архиве договоров, п. 2.", [memo_doc])
+check("memo point by title", out == "Источник: Служебная записка об архиве договоров.")
+out, fixes = strip("Срок оплаты 30 дней (договор № П-17/2024, п. 4.2); оригинал выдаётся на 3 дня (записка № ЮО-7).", [p17_doc, memo_doc])
+check("contract point kept next to memo", "п. 4.2" in out and fixes == [])
+k12_context = verifier.collect_facts(visible_text(k12_doc))
+out, fixes = strip("Проверка обязательна с 21.04.2025 (письмо № К-12, п. 5.4 Регламента).", [k12_doc], k12_context)
+check("point quoted inside letter kept", "п. 5.4" in out and fixes == [])
+check("owner none without mention", verifier.owner_doc("Срок — 3 дня, п. 3.", 12, [memo_doc]) is None)
+
 print(f"passed {passed}, failed {failed}")
