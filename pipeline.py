@@ -378,6 +378,7 @@ def fold(text: str) -> str:
 
 
 find_quote = verifier.find_quote
+WHOLE_DOCUMENT = "текст документа"
 
 
 def locator_key(text: str) -> str:
@@ -420,6 +421,18 @@ def short_line(value: object, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def honest_locator(doc: Document, locator: str, start: int, chunks: list[Chunk]) -> str:
+    if doc.is_law or not verifier.ANY_POINT.search(locator):
+        return locator
+    own = [chunk for chunk in chunks if chunk.doc_id == doc.doc_id]
+    if any(verifier.point_of(chunk.locator) for chunk in own):
+        return locator
+    if re.search(verifier.POINT_TEXT.format(re.escape(verifier.ANY_POINT.search(locator).group(1))), doc.text, re.I):
+        return locator
+    holder = next((chunk for chunk in own if chunk.start <= start < chunk.end), own[0] if own else None)
+    return holder.locator if holder else ""
+
+
 def build_sources(citations: object, engine: Engine, stats: dict | None = None) -> list[dict]:
     sources = []
     seen = set()
@@ -437,6 +450,7 @@ def build_sources(citations: object, engine: Engine, stats: dict | None = None) 
         found = start >= 0
         if not found:
             start, end = find_by_locator(doc, locator, engine.chunks)
+        locator = honest_locator(doc, locator, start, engine.chunks)
         if start >= 0 and overlaps_suspicious(start, end, doc.suspicious):
             stats["dropped"] = stats.get("dropped", 0) + 1
             continue
@@ -452,7 +466,7 @@ def build_sources(citations: object, engine: Engine, stats: dict | None = None) 
 
 
 def source_label(source: dict, doc: Document) -> str:
-    locator = source["locator"]
+    locator = "" if source["locator"] == WHOLE_DOCUMENT else source["locator"]
     if not doc.is_law:
         pattern = number_pattern(doc.number)
         number = f"№ {doc.number}" if pattern and not pattern.search(doc.title) else ""

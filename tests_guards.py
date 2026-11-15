@@ -229,4 +229,14 @@ out, fixes = strip("Проверка обязательна с 21.04.2025 (пи�
 check("point quoted inside letter kept", "п. 5.4" in out and fixes == [])
 check("owner none without mention", verifier.owner_doc("Срок — 3 дня, п. 3.", 12, [memo_doc]) is None)
 
+engine = pipeline.get_engine()
+memo_src = pipeline.build_sources([{"doc_id": memo_doc.doc_id, "locator": "п. 2", "quote": "на срок не более 3 (трёх) рабочих дней"}], engine)
+check("memo invented locator replaced", memo_src and memo_src[0]["locator"] == "текст документа")
+check("memo label without locator", pipeline.source_label(memo_src[0], memo_doc) == "Служебная записка об архиве договоров, № ЮО-7")
+check("memo tail without point", pipeline.finalize("Не более трёх рабочих дней.", memo_src, engine).endswith("Источник: Служебная записка об архиве договоров, № ЮО-7."))
+p17_src = pipeline.build_sources([{"doc_id": p17_doc.doc_id, "locator": "п. 4.2", "quote": "в течение 30 (тридцати) календарных дней"}], engine)
+check("contract locator kept", p17_src and p17_src[0]["locator"] == "п. 4.2")
+k12_src = pipeline.build_sources([{"doc_id": k12_doc.doc_id, "locator": "п. 5.4", "quote": ""}], engine)
+check("point named in letter kept", k12_src and k12_src[0]["locator"] == "п. 5.4")
+
 print(f"passed {passed}, failed {failed}")
