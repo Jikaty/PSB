@@ -1,0 +1,14 @@
+.venv
+.git
+.env
+.idea
+.claude
+debug_prompts
+**/__pycache__
+**/*.pyc
+*.zip
+data/cache
+eval_report.csv
+submission.csv
+submission.csv.tmp
+reference
