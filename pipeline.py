@@ -67,7 +67,7 @@ MARKDOWN_LINE =re.compile(r"^\s*(?:#{1,6}\s+|[-*•]\s+|>\s+)", re.M)
 MARKDOWN_INLINE = re.compile(r"\*\*|__|`+")
 DOC_ID = re.compile(r"d\d+", re.I)
 BARE_ID = re.compile(r"(?:(?<!\w)документ\w*\s+)?(?<![\w-])(d\d{2})(?![\w-])", re.I)
-ID_LEAK =re.compile(r"\s*\((?:[а-яё]+\.?\s*)?(?:d\.?\s?\d{1,3}|д\.?\s?0\d)\)", re.I)
+ID_LEAK =re.compile(r"\s*\((?:[а-яё]+\.?\s*)?(?:d\.?\s?\d{1,3}|(?<![а-яё])д\.?\s?\d{1,3})\)", re.I)
 FOLD = str.maketrans({
     "ё": "е", "\xa0": " ", "«": '"', "»": '"', "“": '"', "”": '"', "„": '"', "‑": "-", "–": "-", "—": "-", "−": "-",
 })

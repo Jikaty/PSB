@@ -467,7 +467,8 @@ web.SETTINGS = real_data_dir
 llm_client.make_client = real_make
 
 requirements = Path(ROOT, "requirements-web.txt").read_text(encoding="utf-8").split()
-check("requirements-web", sorted(line.split("==")[0] for line in requirements) == ["fastapi", "uvicorn"] and all("==" in line for line in requirements))
+check("requirements-web", sorted(line.split("==")[0] for line in requirements) == ["fastapi", "pydantic", "uvicorn"] and all("==" in line for line in requirements))
+check("requirements-web: pydantic pinned", "pydantic==2.14.2" in requirements)
 check("requirements untouched", "fastapi" not in Path(ROOT, "requirements.txt").read_text(encoding="utf-8"))
 
 print(f"passed {passed}, failed {failed}")

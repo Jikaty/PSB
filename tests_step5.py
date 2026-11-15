@@ -122,6 +122,14 @@ check("salvage", pipeline.salvage('{"type":"answer","answer":"Срок \\"30\\" 
 check("salvage text", pipeline.salvage("Просто текст") == "Просто текст")
 check("clean", pipeline.clean_answer("# Заголовок\n- **Да**, `п. 1`\n\n  вторая   строка") == "Заголовок Да, п. 1 вторая строка")
 check("clean none", pipeline.clean_answer(None) == "" and pipeline.clean_answer(5) == "")
+check("clean id leak latin", pipeline.clean_answer("Срок 30 дней (d02) и (док. D7).") == "Срок 30 дней и.")
+check(
+    "clean id leak cyrillic",
+    pipeline.clean_answer("В документе ТК РФ, ст. 70 (д020) указан срок (д2), см. (Д. 15) и (документ д07).")
+    == "В документе ТК РФ, ст. 70 указан срок, см. и.",
+)
+kept = "Ставка (код 12), форма (вид 3), текст (ред. 2), срок (до 30 дней), адрес (д. 1234), п. 4.2 (4.2)."
+check("clean id leak keeps words ending with д", pipeline.clean_answer(kept) == kept)
 
 system = prompts.build_system_prompt("13 ноября 2026 г.")
 check("system date", "Сегодня 13 ноября 2026 г." in system and "{today}" not in system and '{"type"' in system and "{{" not in system)
